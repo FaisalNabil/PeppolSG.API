@@ -209,6 +209,32 @@
     <Compile Include="Service\SignedXmlWithId.cs" />
     <Compile Include="Service\SmkSmpLookupService.cs" />
     <Compile Include="Service\SOAPHeaderParser.cs" />
+    <Compile Include="Filters\*.cs" />
+    <Compile Include="Logging\*.cs" />
+    <Compile Include="ErrorHandling\*.cs" />
+    <Compile Include="Configuration\*.cs" />
+    <Compile Include="Controllers\HealthController.cs" />
+    <Compile Include="Controllers\MessageIdStatusController.cs" />
+    <Compile Include="Service\AttachmentSecurityService.cs" />
+    <Compile Include="Service\CertificateStoreManager.cs" />
+    <Compile Include="Service\EnhancedCertificateValidator.cs" />
+    <Compile Include="Service\MemoryMonitoringService.cs" />
+    <Compile Include="Service\MessageIdCleanupService.cs" />
+    <Compile Include="Service\MessageIdManager.cs" />
+    <Compile Include="Service\MessageValidationService.cs" />
+    <Compile Include="Service\SecureSslValidationService.cs" />
+    <Compile Include="Service\TlsConfigurationService.cs" />
+    <Compile Include="Service\Resilience\*.cs" />
+    <!-- Explicit includes for new components to resolve missing namespace errors -->
+    <Compile Include="Filters\CorrelationIdHandler.cs" />
+    <Compile Include="Filters\CorrelationIdActionFilter.cs" />
+    <Compile Include="Filters\MetricsHandler.cs" />
+    <Compile Include="Logging\StructuredLogger.cs" />
+    <Compile Include="Logging\MetricsService.cs" />
+    <Compile Include="Logging\AuditLogService.cs" />
+    <Compile Include="Logging\AlertingService.cs" />
+    <Compile Include="ErrorHandling\GlobalExceptionHandler.cs" />
+    <Compile Include="Configuration\ConfigurationService.cs" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Areas\HelpPage\HelpPage.css" />
