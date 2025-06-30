@@ -28,6 +28,9 @@ using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Digests;
 using Org.BouncyCastle.Security;
 using System.Security.Cryptography.Xml;
+using log4net;
+using LogManager = log4net.LogManager;
+using static Org.BouncyCastle.Crypto.Engines.SM2Engine;
 
 namespace PeppolSG.API.Controllers
 {
@@ -39,6 +42,8 @@ namespace PeppolSG.API.Controllers
         private readonly IMetadataPersister _metadataPersister = new FileSystemMetadataPersister();
         private readonly IPayloadPersister _payloadPersister = new FileSystemPayloadPersister();
         private readonly SmkSmpLookupService _smkSmpLookup;
+        private string certPath = ConfigurationManager.AppSettings["PeppolP12FilePath"];
+        private string certPwd = ConfigurationManager.AppSettings["PeppolP12Password"];
 
         public As4Controller(SmkSmpLookupService smkSmpLookup)
         {
@@ -142,40 +147,23 @@ namespace PeppolSG.API.Controllers
                 _certificateValidator.Validate(new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate)));
 
                 // Payloads: All non-SOAP parts with Content-ID
-                var userMsgHrefs = userMsg.PayloadHrefs ?? new List<string>();
-                var payloadParts = mimeParts.Where(p => p != soapPart && !string.IsNullOrWhiteSpace(p.ContentId)).ToList();
-                var payloadPaths = new List<string>();
+                // Parse the incoming HTTP request as a MimeKit MultipartRelated (not just your manual parser!)
+                var requestStream = await Request.Content.ReadAsStreamAsync();
+                var parser = new MimeParser(requestStream, MimeFormat.Entity);
+                var mimeMsg = parser.ParseMessage();
+                var related = mimeMsg.Body as MultipartRelated;
+                if (related == null)
+                    throw new Exception("MIME body is not multipart/related");
 
-                if (payloadParts.Count != userMsgHrefs.Count)
-                    throw new Exception($"Mismatch: {payloadParts.Count} attachments but {userMsgHrefs.Count} UserMessage part(s).");
-
-                for (int i = 0; i < payloadParts.Count; i++)
-                {
-                    var payload = payloadParts[i];
-                    var href = userMsgHrefs[i];
-                    if (!href.StartsWith("cid:"))
-                        throw new Exception($"Payload href {href} is not a valid 'cid:' URI.");
-
-                    var payloadInfo = new PayloadInfo
-                    {
-                        ContentId = payload.ContentId,
-                        MimeType = payload.ContentType,
-                        Charset = payload.Headers.TryGetValue("charset", out var cs) ? cs : null,
-                        IsGzip = payload.ContentType.Contains("gzip") ||
-                                 (payload.Headers.TryGetValue("compressiontype", out var ct) && ct.Contains("gzip"))
-                    };
-                    ValidatePayloadHeaders(payloadInfo);
-
-                    var digest = SOAPHeaderParser.GetAttachmentDigest(href, soapXml);
-                    // Optionally validate digest here.
-
-                    byte[] data = payload.ContentBytes;
-                    if (payloadInfo.IsGzip)
-                        data = DecompressGzip(data);
-
-                    var filePath = _payloadPersister.Persist(userMsg.MessageId, payloadInfo, data);
-                    payloadPaths.Add(filePath);
-                }
+                // Now process and persist all referenced payloads
+                var payloadPaths = ProcessAttachments(
+                    related,
+                    soapXml,
+                    userMsg.PayloadHrefs,    // list of cid:...
+                    certPath,
+                    certPwd,
+                    userMsg
+                );
 
                 // 5. Persist metadata
                 var metadata = new As4InboundMetadata
@@ -207,8 +195,6 @@ namespace PeppolSG.API.Controllers
                 var messaging = As4MessageBuilder.BuildMessaging(receiptMessage, messagingId);
 
                 // Load signing certificate
-                var certPath = ConfigurationManager.AppSettings["PeppolP12FilePath"];
-                var certPwd = ConfigurationManager.AppSettings["PeppolP12Password"];
                 var signingCert = new X509Certificate2(certPath, certPwd);
 
                 // Build WS-Security header
@@ -279,19 +265,12 @@ namespace PeppolSG.API.Controllers
                 // 1. Read invoice XML
                 var invoiceXml = await Request.Content.ReadAsStringAsync();
 
-                // Extract receiverId and scheme from SBDH
-                var xdoc = XDocument.Parse(invoiceXml);
-                XNamespace ns = "http://www.unece.org/cefact/namespaces/StandardBusinessDocumentHeader";
-                var receiverEl = xdoc.Descendants(ns + "StandardBusinessDocumentHeader")
-                    .Descendants(ns + "Receiver")
-                    .Descendants(ns + "Identifier")
-                    .FirstOrDefault();
-                string receiverId = receiverEl?.Value;
-                string receiverScheme = receiverEl?.Attribute("Authority")?.Value ?? "iso6523-actorid-upis";
                 // 2. Extract PEPPOL header info (your implementation)
                 var peppolHeader = ExtractPeppolHeaderInfo(invoiceXml);
                 var recipientId = peppolHeader.ReceiverId;
                 var senderId = peppolHeader.SenderId;
+                var receiverId = peppolHeader.ReceiverId;
+                var receiverScheme = peppolHeader.ReceiverScheme ?? "iso6523-actorid-upis";
                 var docTypeId = $"{peppolHeader.DocumentScheme}::{peppolHeader.DocTypeId}";
                 var processId = peppolHeader.ProcessId;
                 var instanceId = peppolHeader.InstanceId;
@@ -310,8 +289,6 @@ namespace PeppolSG.API.Controllers
                 var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
 
                 // 5. Load sender cert
-                var certPath = System.Configuration.ConfigurationManager.AppSettings["PeppolP12FilePath"];
-                var certPwd = System.Configuration.ConfigurationManager.AppSettings["PeppolP12Password"];
                 var senderCert = new X509Certificate2(certPath, certPwd);
                 var senderPartyId = GetCertificateCommonName(senderCert);
                 var receiverPartyId = GetCertificateCommonName(recipientCert);
@@ -319,20 +296,23 @@ namespace PeppolSG.API.Controllers
                 // 6. Compress & AES-GCM encrypt payload
                 var plainBytes = Encoding.UTF8.GetBytes(invoiceXml);
                 var gzipped = CompressGzip(plainBytes);
+                // Generate AES key and IV (12 bytes for GCM)
                 var aesKey = new byte[16];
-                var aesIv = new byte[16];   // CBC IV is 16 bytes
+                var aesIv = new byte[12]; // 12 bytes for GCM
+                byte[] gcmTag;
                 using (var rng = RandomNumberGenerator.Create())
                 {
                     rng.GetBytes(aesKey);
                     rng.GetBytes(aesIv);
                 }
-                // encrypt the gzipped payload with AES-CBC + PKCS7
-                var cipher = CryptoUtil.AesCbcEncrypt(aesKey, aesIv, gzipped);
+                // encrypt the gzipped payload with AES-GCM
+                var cipher = CryptoUtil.AesGcmEncrypt(aesKey, aesIv, gzipped, out gcmTag);
 
-                // Prepend IV, no tag
-                var encryptedAttachment = new byte[aesIv.Length + cipher.Length];
+                // Attachment is IV + cipher + tag (concatenated, as per Peppol conventions)
+                var encryptedAttachment = new byte[aesIv.Length + cipher.Length + gcmTag.Length];
                 Buffer.BlockCopy(aesIv, 0, encryptedAttachment, 0, aesIv.Length);
                 Buffer.BlockCopy(cipher, 0, encryptedAttachment, aesIv.Length, cipher.Length);
+                Buffer.BlockCopy(gcmTag, 0, encryptedAttachment, aesIv.Length + cipher.Length, gcmTag.Length);
 
                 // 7. Protect AES key with RSA-OAEP/SHA-256
                 var encryptedAesKey = RsaOaepEncrypt_MGF1_SHA256(aesKey, recipientCert);
@@ -376,87 +356,45 @@ namespace PeppolSG.API.Controllers
                     partHref, encryptedAttachment
                 );
 
-                // Serialize SOAP with XML declaration
-                var xmlSettings = new XmlWriterSettings
+                // 12. Build MIME multipart/related with CreateMtomResponse
+                var attachments = new List<As4MessageBuilder.Attachment>
                 {
-                    OmitXmlDeclaration = false,
-                    Encoding = new UTF8Encoding(false),
-                    Indent = false
-                };
-                string soapXmlString;
-                using (var ms = new MemoryStream())
-                {
-                    using (var xmlWriter = XmlWriter.Create(ms, xmlSettings))
+                    new As4MessageBuilder.Attachment
                     {
-                        soapDoc.WriteTo(xmlWriter);
-                        xmlWriter.Flush();
+                        ContentId = attachmentCid,
+                        ContentType = "application/octet-stream",
+                        Bytes = encryptedAttachment
                     }
-                    soapXmlString = Encoding.UTF8.GetString(ms.ToArray());
-                }
-
-                // 12. Build MIME multipart/related
-                var boundary = "----=_Part_" + Guid.NewGuid().ToString("N");
-                var message = new MimeMessage();
-                var multipart = new MultipartRelated { ContentType = { Boundary = boundary } };
-                multipart.ContentType.Parameters.Add("type", "application/soap+xml");
-
-                // SOAP part
-                var soapPart = new MimePart("application", "soap+xml")
-                {
-                    Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapXmlString)), ContentEncoding.Binary),
-                    ContentTransferEncoding = ContentEncoding.Binary,
                 };
-                soapPart.ContentType.Charset = "UTF-8";
 
-                multipart.Add(soapPart);
-
-                // Encrypted attachment part
-                var payloadPart = new MimePart("application", "octet-stream")
-                {
-                    Content = new MimeContent(new MemoryStream(encryptedAttachment), ContentEncoding.Binary),
-                    ContentTransferEncoding = ContentEncoding.Binary,
-                };
-                payloadPart.ContentId = $"<{attachmentCid}>"; // Must match href in SOAP
-                payloadPart.ContentDescription = "Attachment";
-                multipart.Add(payloadPart);
-
-                message.Body = multipart;
+                var mtomResponse = As4MessageBuilder.CreateMtomResponse(
+                    soapDoc,
+                    attachments,
+                    HttpStatusCode.OK // not used for sending, but required
+                );
 
                 // 13. Send HTTP request
                 using (var http = new HttpClient())
-                using (var msOut = new MemoryStream())
                 {
-                    // write the full MimeKit message into our buffer
-                    message.WriteTo(msOut);
-
-                    // rewind & grab the bytes so we can both log (or inspect) *and* send them
-                    var rawBytes = msOut.ToArray();
-                    var rawText = Encoding.UTF8.GetString(rawBytes);
-
-                    // **1) log it**
-                    log.Info("=== OUTGOING AS4 MIME ===\n" + rawText);
-
-                    // **2) if you want to *see* it in your HTTP response for debugging:**
-                    // return Content(HttpStatusCode.OK, rawText, "text/plain");
-
-                    // otherwise rewind and send on its way:
-                    msOut.Flush(); // Ensure all data is writtenmsOut.Position = 0;
-                    msOut.Position = 0;
-                    var content = new StreamContent(msOut);
-                    content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(
-                        $"multipart/related; type=\"application/soap+xml\"; boundary=\"{boundary}\""
-                    );
-
-                    var req = new HttpRequestMessage(HttpMethod.Post, recipientEndpoint)
+                    var outReq = new HttpRequestMessage(HttpMethod.Post, recipientEndpoint)
                     {
-                        Content = content
+                        Content = mtomResponse.Content
                     };
-                    req.Headers.ExpectContinue = false;
-                    req.Headers.Add("SOAPAction", string.Empty);
+                    outReq.Headers.Add("SOAPAction", ""); // Required by Peppol
+                                                          // (Optional) If you want to log or inspect the outgoing MIME:
+                                                          // var debugRaw = await mtomResponse.Content.ReadAsStringAsync();
+                    outReq.Headers.Add("X-Token", "NjIh9tIx3Rgzme19mGIy");
+                    outReq.Headers.TryAddWithoutValidation("MIME-Version", "1.0");
+                    // Log headers
+                    foreach (var h in outReq.Headers)
+                        log.Info($"{h.Key}: {string.Join(", ", h.Value)}");
 
-                    var resp = await http.SendAsync(req);
-                    var respText = await resp.Content.ReadAsStringAsync();
-                    return Content(resp.StatusCode, respText);
+                    // Log MIME body
+                    var debugRaw = await mtomResponse.Content.ReadAsStringAsync();
+                    log.Info("--- AS4 Outgoing MIME Body ---\n" + debugRaw);
+
+                    var resp = await http.SendAsync(outReq);
+                    return ResponseMessage(resp);
                 }
             }
             catch (Exception ex)
@@ -498,6 +436,8 @@ namespace PeppolSG.API.Controllers
 
             var senderId = header.Descendants(ns + "Sender").Descendants(ns + "Identifier").FirstOrDefault()?.Value;
             var receiverId = header.Descendants(ns + "Receiver").Descendants(ns + "Identifier").FirstOrDefault()?.Value;
+            var senderScheme = header.Descendants(ns + "Sender").Descendants(ns + "Identifier").FirstOrDefault()?.Attribute("Authority")?.Value;
+            var receiverScheme = header.Descendants(ns + "Receiver").Descendants(ns + "Identifier").FirstOrDefault()?.Attribute("Authority")?.Value;
 
             // DocumentIdentification->InstanceIdentifier (unique for every invoice)
             var instanceId = header.Descendants(ns + "DocumentIdentification").Descendants(ns + "InstanceIdentifier").FirstOrDefault()?.Value;
@@ -518,7 +458,9 @@ namespace PeppolSG.API.Controllers
             return new PeppolHeaderInfo
             {
                 SenderId = senderId,
+                SenderScheme = senderScheme,
                 ReceiverId = receiverId,
+                ReceiverScheme = receiverScheme,
                 DocTypeId = docTypeId,
                 DocumentScheme = documentScheme,
                 ProcessId = processId,
@@ -782,7 +724,9 @@ namespace PeppolSG.API.Controllers
     X509Certificate2 myCert,
     string href)
         {
+            // Namespaces
             var xenc = XNamespace.Get("http://www.w3.org/2001/04/xmlenc#");
+            var xenc11 = XNamespace.Get("http://www.w3.org/2009/xmlenc11#");
             var ds = XNamespace.Get("http://www.w3.org/2000/09/xmldsig#");
 
             // 1) locate EncryptedData for this href
@@ -797,7 +741,12 @@ namespace PeppolSG.API.Controllers
             if (encryptedData == null)
                 throw new InvalidOperationException("No EncryptedData for " + href);
 
-            // 2) find the EncryptedKey that it references
+            // 2) Algorithm detection (CBC or GCM)
+            var encMethodElem = encryptedData.Element(xenc + "EncryptionMethod")
+                                ?? encryptedData.Element(xenc11 + "EncryptionMethod");
+            var alg = encMethodElem?.Attribute("Algorithm")?.Value;
+
+            // 3) find the EncryptedKey that it references
             var keyRef = encryptedData
               .Element(ds + "KeyInfo")
               .Descendants()
@@ -810,24 +759,54 @@ namespace PeppolSG.API.Controllers
             if (encryptedKeyElem == null)
                 throw new InvalidOperationException("No EncryptedKey with Id=" + keyId);
 
-            // 3) unwrap the AES key via RSA-OAEP-SHA256
-            var encryptedKeyB64 = encryptedKeyElem
-              .Element(xenc + "CipherData")
-              .Element(xenc + "CipherValue")
-              .Value;
+            // 4) Determine key encryption method (OAEP-SHA1, OAEP-SHA256)
+            var keyEncAlg = encryptedKeyElem.Element(xenc + "EncryptionMethod")?.Attribute("Algorithm")?.Value;
+            var encryptedKeyB64 = encryptedKeyElem.Element(xenc + "CipherData").Element(xenc + "CipherValue").Value;
             var encryptedKey = Convert.FromBase64String(encryptedKeyB64);
+
+            byte[] aesKey;
             var rsa = myCert.GetRSAPrivateKey();
-            var aesKey = rsa.Decrypt(encryptedKey, RSAEncryptionPadding.OaepSHA256);
+            if (keyEncAlg == "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p" // OAEP w/ SHA-1
+                || string.IsNullOrEmpty(keyEncAlg)) // default fallback
+            {
+                aesKey = rsa.Decrypt(encryptedKey, RSAEncryptionPadding.OaepSHA1);
+            }
+            else if (keyEncAlg == "http://www.w3.org/2009/xmlenc11#rsa-oaep") // OAEP w/ SHA-256
+            {
+                aesKey = rsa.Decrypt(encryptedKey, RSAEncryptionPadding.OaepSHA256);
+            }
+            else
+            {
+                throw new NotSupportedException("Unsupported key encryption algorithm: " + keyEncAlg);
+            }
 
-            // 4) split out IV (16 bytes) + ciphertext
-            if (encryptedBytes.Length < 16)
-                throw new InvalidOperationException("Attachment too short to contain IV");
-            var iv = encryptedBytes.Take(16).ToArray();
-            var cipherText = encryptedBytes.Skip(16).ToArray();
-
-            // 5) decrypt with AES-CBC
-            return CryptoUtil.AesCbcDecrypt(aesKey, iv, cipherText);
+            // 5) Decrypt data according to EncryptionMethod
+            if (alg == "http://www.w3.org/2001/04/xmlenc#aes256-cbc" || alg == "http://www.w3.org/2001/04/xmlenc#aes128-cbc" || alg.EndsWith("aes-cbc"))
+            {
+                // CBC: First 16 bytes = IV, rest = ciphertext
+                if (encryptedBytes.Length < 16)
+                    throw new InvalidOperationException("Attachment too short to contain IV");
+                var iv = encryptedBytes.Take(16).ToArray();
+                var cipherText = encryptedBytes.Skip(16).ToArray();
+                return CryptoUtil.AesCbcDecrypt(aesKey, iv, cipherText);
+            }
+            else if (alg == "http://www.w3.org/2009/xmlenc11#aes256-gcm" || alg == "http://www.w3.org/2009/xmlenc11#aes128-gcm" || alg.EndsWith("aes-gcm"))
+            {
+                // GCM: 12 byte IV (see Peppol/AS4 testbed), tag at the end (16 bytes)
+                // Some variants: [IV | ciphertext | tag]
+                if (encryptedBytes.Length < 12 + 16)
+                    throw new InvalidOperationException("Attachment too short for GCM");
+                var iv = encryptedBytes.Take(12).ToArray();
+                var tag = encryptedBytes.Skip(encryptedBytes.Length - 16).ToArray();
+                var cipherText = encryptedBytes.Skip(12).Take(encryptedBytes.Length - 12 - 16).ToArray();
+                return CryptoUtil.AesGcmDecrypt(aesKey, iv, cipherText, tag);
+            }
+            else
+            {
+                throw new NotSupportedException("Unsupported data encryption algorithm: " + alg);
+            }
         }
+
 
         public static string GetClientIp(HttpRequestMessage request)
         {
@@ -887,6 +866,8 @@ namespace PeppolSG.API.Controllers
     {
         public string SenderId { get; set; }
         public string ReceiverId { get; set; }
+        public string SenderScheme { get; set; }
+        public string ReceiverScheme { get; set; }
         public string DocTypeId { get; set; } // Will hold only the value/InstanceIdentifier for backward compat
         public string DocumentScheme { get; set; } // NEW: The scheme part for docTypeId
         public string ProcessId { get; set; }

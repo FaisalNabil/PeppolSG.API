@@ -119,7 +119,7 @@ namespace PeppolSG.API.Service
             const string wsuNs = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
 
             // Build the <wsse:SecurityTokenReference>
-            var strElement = doc.CreateElement("wsse", "SecurityTokenReference", wsseNs);
+            var strElement = doc.CreateElement("wsse", "SecurityTokenReference");
             // !!! here’s the fix: use the namespace URI string, not an XName !!!
             strElement.SetAttribute("Id", wsuNs, "STR-" + Guid.NewGuid().ToString("N"));
 
@@ -147,39 +147,6 @@ namespace PeppolSG.API.Service
             if (oldSig == null)
                 throw new InvalidOperationException("No <ds:Signature> placeholder found.");
             oldSig.ParentNode.ReplaceChild(xmlDoc.ImportNode(newSig, true), oldSig);
-        }
-
-        // your RSA‐OAEP‐SHA256 helper
-        private static byte[] RsaOaepEncrypt_MGF1_SHA256(byte[] data, X509Certificate2 cert)
-        {
-            // Grab whatever RSA the cert gives us
-            var rsaPub = cert.GetRSAPublicKey();
-            RSA rsa;
-            bool dispose = false;
-
-            // If it's already an RSACng (supports SHA256‐OAEP), use it
-            if (rsaPub is RSACng)
-            {
-                rsa = rsaPub;
-            }
-            else
-            {
-                // Otherwise export the CAPI key parameters and import into a new RSA (RSACng)
-                var parms = rsaPub.ExportParameters(false);
-                rsa = RSA.Create();              // on Win this is RSACng under the hood
-                rsa.ImportParameters(parms);
-                dispose = true;                 // so we know to dispose it
-            }
-
-            try
-            {
-                return rsa.Encrypt(data, RSAEncryptionPadding.OaepSHA256);
-            }
-            finally
-            {
-                if (dispose)
-                    rsa.Dispose();
-            }
         }
 
 
@@ -245,6 +212,55 @@ namespace PeppolSG.API.Service
 
             var decryptor = aes.CreateDecryptor();
             return decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
+        }
+        // ------------------------------------------------------------------
+        // AES-GCM helpers used for eDelivery AS4 2.0 profile
+        // ------------------------------------------------------------------
+        public static byte[] AesGcmEncrypt(byte[] key, byte[] iv, byte[] plain, out byte[] tag)
+        {
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (iv == null) throw new ArgumentNullException(nameof(iv));
+            if (plain == null) throw new ArgumentNullException(nameof(plain));
+
+            var cipher = new Org.BouncyCastle.Crypto.Modes.GcmBlockCipher(new Org.BouncyCastle.Crypto.Engines.AesEngine());
+            var parameters = new Org.BouncyCastle.Crypto.Parameters.AeadParameters(new Org.BouncyCastle.Crypto.Parameters.KeyParameter(key), 128, iv);
+            cipher.Init(true, parameters);
+
+            var output = new byte[cipher.GetOutputSize(plain.Length)];
+            int len = cipher.ProcessBytes(plain, 0, plain.Length, output, 0);
+            len += cipher.DoFinal(output, len);
+
+            int tagLen = 16; // 128 bit tag
+            int cipherLen = len - tagLen;
+            var ciphertext = new byte[cipherLen];
+            tag = new byte[tagLen];
+            Array.Copy(output, 0, ciphertext, 0, cipherLen);
+            Array.Copy(output, cipherLen, tag, 0, tagLen);
+            return ciphertext;
+        }
+
+        public static byte[] AesGcmDecrypt(byte[] key, byte[] iv, byte[] cipher, byte[] tag)
+        {
+            if (key == null) throw new ArgumentNullException(nameof(key));
+            if (iv == null) throw new ArgumentNullException(nameof(iv));
+            if (cipher == null) throw new ArgumentNullException(nameof(cipher));
+            if (tag == null) throw new ArgumentNullException(nameof(tag));
+
+            var input = new byte[cipher.Length + tag.Length];
+            Array.Copy(cipher, 0, input, 0, cipher.Length);
+            Array.Copy(tag, 0, input, cipher.Length, tag.Length);
+
+            var gcm = new Org.BouncyCastle.Crypto.Modes.GcmBlockCipher(new Org.BouncyCastle.Crypto.Engines.AesEngine());
+            var parameters = new Org.BouncyCastle.Crypto.Parameters.AeadParameters(new Org.BouncyCastle.Crypto.Parameters.KeyParameter(key), tag.Length * 8, iv);
+            gcm.Init(false, parameters);
+
+            var output = new byte[gcm.GetOutputSize(input.Length)];
+            int len = gcm.ProcessBytes(input, 0, input.Length, output, 0);
+            len += gcm.DoFinal(output, len);
+
+            var plain = new byte[len];
+            Array.Copy(output, 0, plain, 0, len);
+            return plain;
         }
     }
     internal sealed class AttachmentResolver : XmlUrlResolver

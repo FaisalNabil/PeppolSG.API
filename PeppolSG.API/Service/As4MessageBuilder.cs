@@ -27,6 +27,8 @@ namespace PeppolSG.API.Service
         // SOAP / XLink
         private static readonly XNamespace S12 = "http://www.w3.org/2003/05/soap-envelope";
         private static readonly XNamespace XLINK = "http://www.w3.org/1999/xlink";
+        private static readonly XNamespace NS2 = "http://schemas.xmlsoap.org/soap/envelope/";
+        private static readonly XNamespace NS3 = "http://www.w3.org/2003/05/soap-envelope";
 
         const string EbmsRole = "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/role/ebms";
 
@@ -148,12 +150,13 @@ namespace PeppolSG.API.Service
         public static XElement BuildMessaging(XElement messageOrSignal, string messagingId = null)
         {
             var el = new XElement(EB + "Messaging",
-                new XAttribute(XNamespace.Xmlns + "eb", EB.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "ds", DS.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "eb", EB.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "ebbp", EBBP.NamespaceName),
-                new XAttribute(XNamespace.Xmlns + "S12", S12.NamespaceName),
-                new XAttribute(XNamespace.Xmlns + "xlink", XLINK.NamespaceName),
-                new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName)
+                new XAttribute(XNamespace.Xmlns + "ns2", NS2.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "ns3", NS3.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "xlink", XLINK.NamespaceName)
             );
 
             if (!string.IsNullOrWhiteSpace(messagingId))
@@ -217,7 +220,7 @@ namespace PeppolSG.API.Service
                 new XAttribute(XNamespace.Xmlns + "xenc", XENC.NamespaceName),
                 new XAttribute("Id", ekId),
                 new XElement(XENC + "EncryptionMethod",
-                    new XAttribute("Algorithm", XENC.NamespaceName + "rsa-oaep-mgf1p"),
+                    new XAttribute("Algorithm", XENC11.NamespaceName + "rsa-oaep"),
                     new XElement(DS + "DigestMethod",
                         new XAttribute("Algorithm", XENC.NamespaceName + "sha256")),
                     new XElement(XENC11 + "MGF",
@@ -260,7 +263,7 @@ namespace PeppolSG.API.Service
 
             return new XElement(XENC + "EncryptedData", attrs,
                 new XElement(XENC + "EncryptionMethod",
-                    new XAttribute("Algorithm", XENC.NamespaceName + "aes128-cbc")
+                    new XAttribute("Algorithm", XENC11.NamespaceName + "aes128-gcm")
                 ),
                 new XElement(DS + "KeyInfo",
                     new XElement(WSSE + "SecurityTokenReference",
@@ -357,7 +360,8 @@ namespace PeppolSG.API.Service
             var xml = soapEnvelope.Declaration + soapEnvelope.ToString(SaveOptions.DisableFormatting);
             var soapContent = new StringContent(xml, Encoding.UTF8, "application/soap+xml");
             // indicate the root part
-            soapContent.Headers.ContentType.Parameters.Add(new NameValueHeaderValue("type", "\"application/soap+xml\""));
+            //soapContent.Headers.ContentType.Parameters.Add(new NameValueHeaderValue("type", "\"application/soap+xml\""));
+            soapContent.Headers.Add("Content-Transfer-Encoding", "binary");
             soapContent.Headers.Add("Content-ID", "<root.message>");
             multipart.Add(soapContent);
 
@@ -366,8 +370,8 @@ namespace PeppolSG.API.Service
             {
                 var bin = new ByteArrayContent(att.Bytes);
                 bin.Headers.ContentType = MediaTypeHeaderValue.Parse(att.ContentType);
-                bin.Headers.Add("Content-ID", $"<{att.ContentId}>");
                 bin.Headers.Add("Content-Transfer-Encoding", "binary");
+                bin.Headers.Add("Content-ID", $"<{att.ContentId}>");
                 multipart.Add(bin);
             }
 
