@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1
+    - name: Restore NuGet
+      run: nuget restore PeppolSG.API.sln
+    - name: Build
+      run: msbuild PeppolSG.API.sln /p:Configuration=Release
+    - name: Run tests
+      uses: microsoft/vstest-action@v1
+      with:
+        testAssembly: '**\*Tests.dll'
+    - name: Package
+      shell: pwsh
+      run: ./BuildRelease.ps1 -Configuration Release
+    - name: Archive artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: PeppolSG.API
+        path: artifacts/*.zip 

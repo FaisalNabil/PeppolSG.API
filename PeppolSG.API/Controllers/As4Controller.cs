@@ -31,6 +31,7 @@ using System.Security.Cryptography.Xml;
 using log4net;
 using LogManager = log4net.LogManager;
 using static Org.BouncyCastle.Crypto.Engines.SM2Engine;
+using PeppolSG.API.Logging;
 
 namespace PeppolSG.API.Controllers
 {
@@ -38,16 +39,21 @@ namespace PeppolSG.API.Controllers
     public class As4Controller : ApiController
     {
         private static readonly ILog log = LogManager.GetLogger(typeof(As4Controller));
-        private readonly ICertificateValidator _certificateValidator = new BasicCertificateValidator();
+        private readonly ICertificateValidator _certificateValidator;
         private readonly IMetadataPersister _metadataPersister = new FileSystemMetadataPersister();
         private readonly IPayloadPersister _payloadPersister = new FileSystemPayloadPersister();
         private readonly SmkSmpLookupService _smkSmpLookup;
+        private readonly IMessageIdManager _messageIdManager;
+        private readonly MessageValidationService _messageValidator = new MessageValidationService();
         private string certPath = ConfigurationManager.AppSettings["PeppolP12FilePath"];
         private string certPwd = ConfigurationManager.AppSettings["PeppolP12Password"];
 
-        public As4Controller(SmkSmpLookupService smkSmpLookup)
+        public As4Controller(SmkSmpLookupService smkSmpLookup, ICertificateValidator certificateValidator = null, IMessageIdManager messageIdManager = null)
         {
             _smkSmpLookup = smkSmpLookup;
+            var isTestEnvironment = bool.Parse(ConfigurationManager.AppSettings["IsTestEnvironment"] ?? "false");
+            _certificateValidator = certificateValidator ?? new EnhancedCertificateValidator(isTestEnvironment: isTestEnvironment);
+            _messageIdManager = messageIdManager ?? new MessageIdManager();
         }
 
 
@@ -94,6 +100,9 @@ namespace PeppolSG.API.Controllers
 
                 var soapXml = XDocument.Parse(soapPart.ContentText);
                 log.Info($"=== Parsed SOAP Envelope ===\n{soapXml}");
+
+                // Enhanced Day-4 validation: SOAP header, namespaces, size limits, UserMessage properties
+                _messageValidator.Validate(soapXml, mimeParts);
 
                 // Parse protocol details
                 //var senderCert = SOAPHeaderParser.GetSenderCertificate(soapXml);
@@ -143,7 +152,15 @@ namespace PeppolSG.API.Controllers
                 if (string.IsNullOrWhiteSpace(userMsg.MessageId))
                     throw new Exception("MessageId missing from UserMessage.");
 
+                // Validate message ID format and check for duplicates
                 ValidateMessageId(userMsg.MessageId);
+                
+                // Check for duplicate message
+                if (_messageIdManager.IsDuplicate(userMsg.MessageId, GetClientIp(Request)))
+                {
+                    log.Warn($"Duplicate message rejected: {userMsg.MessageId} from {GetClientIp(Request)}");
+                    throw new Exception($"Duplicate message ID: {userMsg.MessageId}");
+                }
                 _certificateValidator.Validate(new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate)));
 
                 // Payloads: All non-SOAP parts with Content-ID
@@ -181,6 +198,7 @@ namespace PeppolSG.API.Controllers
                     CertificateBase64 = endpointMetadata.Certificate,
                 };
                 _metadataPersister.Persist(metadata);
+                AuditLogService.Record("InboundMessage", userMsg.MessageId, new { Sender = userMsg.FromPartyId, Receiver = userMsg.ToPartyId, DocumentType = userMsg.Service });
 
                 // 6. Generate and sign AS4 receipt
                 var receiptTimestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
@@ -584,10 +602,17 @@ namespace PeppolSG.API.Controllers
         }
         private void ValidateMessageId(string messageId)
         {
-            // Implement protocol syntax validation here!
-            if (string.IsNullOrWhiteSpace(messageId))
-                throw new Exception("Invalid MessageId (blank)");
-            // You can enforce regex, length, etc.
+            try
+            {
+                // Use the comprehensive message ID validation from MessageIdManager
+                _messageIdManager.ValidateMessageIdFormat(messageId);
+                log.Debug($"Message ID validation passed: {messageId}");
+            }
+            catch (ArgumentException ex)
+            {
+                log.Error($"Message ID validation failed: {messageId}. Error: {ex.Message}");
+                throw new Exception($"Invalid MessageId: {ex.Message}");
+            }
         }
 
         private bool ValidateSoapSignature(XDocument soapXml, X509Certificate2 cert)
@@ -691,8 +716,16 @@ namespace PeppolSG.API.Controllers
                     encrypted = ms.ToArray();
                 }
 
+                // Day-5 attachment security checks
+                AttachmentSecurityService.ValidateMimeType(part.ContentType.MimeType);
+
                 // decrypt
                 byte[] clear = DecryptPeppolAttachment(encrypted, soapXml, myCert, href);
+
+                if (part.ContentType.MimeType == "application/gzip")
+                {
+                    clear = AttachmentSecurityService.SecureGzipDecompress(clear);
+                }
 
                 // digest check
                 byte[] expected = SOAPHeaderParser.GetAttachmentDigest(href, soapXml);
