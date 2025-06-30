@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Security;
 using log4net;
+using PeppolSG.API.Controllers;
 
 namespace PeppolSG.API.Service
 {

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Xml.Linq;
 using log4net;
+using PeppolSG.API.Controllers;
 
 namespace PeppolSG.API.Service
 {

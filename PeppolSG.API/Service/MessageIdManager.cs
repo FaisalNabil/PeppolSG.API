@@ -65,7 +65,7 @@ namespace PeppolSG.API.Service
             LoadFromPersistentStorage();
             
             // Start cleanup timer
-            _cleanupTimer = new Timer(PerformCleanup, null, _cleanupInterval, _cleanupInterval);
+            _cleanupTimer = new Timer(state => PerformCleanup(), null, (int)_cleanupInterval.TotalMilliseconds, (int)_cleanupInterval.TotalMilliseconds);
             
             log.Info($"MessageIdManager initialized: TTL={_messageIdTtl}, CleanupInterval={_cleanupInterval}, " +
                     $"MaxEntries={_maxInMemoryEntries}, PersistentStorage={_persistentStorageEnabled}");
@@ -219,7 +219,7 @@ namespace PeppolSG.API.Service
         public int CleanupExpiredMessages()
         {
             log.Info("Manual cleanup of expired message IDs triggered");
-            return PerformCleanup(null);
+            return PerformCleanup();
         }
 
         /// <summary>
@@ -361,7 +361,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Performs periodic cleanup of expired message IDs
         /// </summary>
-        private int PerformCleanup(object state)
+        private int PerformCleanup()
         {
             try
             {
@@ -422,15 +422,16 @@ namespace PeppolSG.API.Service
 
                 // Remove oldest entries that haven't been hit recently
                 var now = DateTime.UtcNow;
-                var entriesToRemove = _messageIds.Values
-                    .Where(entry => (now - entry.LastSeen) > _messageIdTtl.Multiply(0.5)) // Remove entries older than half TTL
+                var halfTtl = TimeSpan.FromTicks((long)(_messageIdTtl.Ticks * 0.5));
+                var toRemove = _messageIds.Values
+                    .Where(entry => (now - entry.LastSeen) > halfTtl) // Remove entries older than half TTL
                     .OrderBy(entry => entry.LastSeen)
                     .Take(_messageIds.Count - _maxInMemoryEntries)
                     .Select(entry => entry.MessageId)
                     .ToList();
 
                 var removedCount = 0;
-                foreach (var messageId in entriesToRemove)
+                foreach (var messageId in toRemove)
                 {
                     if (_messageIds.TryRemove(messageId, out _))
                     {
@@ -513,7 +514,7 @@ namespace PeppolSG.API.Service
                     _cleanupTimer?.Dispose();
                     
                     // Perform final cleanup
-                    PerformCleanup(null);
+                    PerformCleanup();
                     
                     log.Info($"MessageIdManager disposed. Final statistics: " +
                             $"Processed={_totalMessagesProcessed}, Duplicates={_duplicatesDetected}, " +
