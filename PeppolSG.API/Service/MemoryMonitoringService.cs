@@ -40,7 +40,7 @@ namespace PeppolSG.API.Service
         {
             lock (_lock)
             {
-                _instance ??= new MemoryMonitoringService();
+                _instance = _instance ?? new MemoryMonitoringService();
             }
         }
 

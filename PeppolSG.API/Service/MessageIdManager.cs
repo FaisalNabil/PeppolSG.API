@@ -321,13 +321,14 @@ namespace PeppolSG.API.Service
             if (!_persistentStorageEnabled)
                 return;
 
-            try
+            var safeFilename = SanitizeFilename(entry.MessageId);
+            var filePath = Path.Combine(_persistentStoragePath, safeFilename + ".json");
+            var tempFilePath = filePath + ".tmp";
+
+            Task.Run(() =>
             {
                 lock (_persistenceLock)
                 {
-                    var fileName = $"messageids_{DateTime.UtcNow:yyyyMMdd_HH}.json";
-                    var filePath = Path.Combine(_persistentStoragePath, fileName);
-                    
                     var entries = new List<MessageIdEntry>();
                     
                     // Load existing entries if file exists
@@ -349,13 +350,31 @@ namespace PeppolSG.API.Service
                     
                     // Write back to file
                     var json = JsonSerializer.Serialize(entries, new JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText(filePath, json);
+                    File.WriteAllText(tempFilePath, json);
+                    
+                    // Move temp file to final file
+                    File.Move(tempFilePath, filePath);
                 }
-            }
-            catch (Exception ex)
-            {
-                log.Error($"Failed to persist message ID {entry.MessageId}: {ex.Message}", ex);
-            }
+            });
+        }
+
+        private static string SanitizeFilename(string filename)
+        {
+            if (string.IsNullOrWhiteSpace(filename))
+                return string.Empty;
+
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var sanitized = new string(filename.Where(c => !invalidChars.Contains(c)).ToArray());
+            
+            // Remove directory traversal attempts
+            sanitized = sanitized.Replace("..", "");
+
+            // Truncate if too long
+            const int maxLen = 100;
+            if (sanitized.Length > maxLen)
+                sanitized = sanitized.Substring(0, maxLen);
+            
+            return sanitized;
         }
 
         /// <summary>

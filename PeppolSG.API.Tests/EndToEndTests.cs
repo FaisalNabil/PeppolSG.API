@@ -62,7 +62,7 @@ namespace PeppolSG.API.Tests
 
         private class TestMetadataPersister : IMetadataPersister
         {
-            public List<As4Controller.As4InboundMetadata> Items { get; } = new();
+            public List<As4Controller.As4InboundMetadata> Items { get; } = new List<As4Controller.As4InboundMetadata>();
             public void Persist(As4Controller.As4InboundMetadata metadata) => Items.Add(metadata);
         }
         private class TestPayloadPersister : IPayloadPersister

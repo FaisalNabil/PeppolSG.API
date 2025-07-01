@@ -15,28 +15,51 @@ namespace PeppolSG.API.Service
     public class SmkSmpLookupService
     {
         private static readonly log4net.ILog log = log4net.LogManager.GetLogger(typeof(SmkSmpLookupService));
-        private static readonly ConcurrentDictionary<string, (PeppolEndpointMetadata Meta, DateTime Expiry)> _cache = new();
-        private readonly string _smpDomain;
-        private readonly string _certPath;
-        private readonly string _certPwd;
-        private readonly SecureSslValidationService _sslValidator;
-        private readonly bool _isTestEnvironment;
+        private static readonly ConcurrentDictionary<string, (PeppolEndpointMetadata Meta, DateTime Expiry)> _cache = new ConcurrentDictionary<string, (PeppolEndpointMetadata Meta, DateTime Expiry)>();
+        private static readonly HttpClient _httpClient;
+
         private readonly List<string> _smpDomains;
         private readonly int _retryCount;
         private readonly int _initialDelayMs;
         private readonly int _timeoutSec;
 
-        /// <param name="smpDomain">e.g. acc.edelivery.tech.ec.europa.eu (test), edelivery.tech.ec.europa.eu (prod)</param>
-        public SmkSmpLookupService(string smpDomain = "smp-test.peppol.org",
-                                    string certPath = null,
-                                    string certPwd = null,
-                                    SecureSslValidationService sslValidator = null)
+        static SmkSmpLookupService()
         {
-            _smpDomain = smpDomain;
-            _certPath = certPath ?? ConfigurationManager.AppSettings["PeppolP12FilePath"];
-            _certPwd = certPwd ?? ConfigurationManager.AppSettings["PeppolP12Password"];
-            _isTestEnvironment = bool.Parse(ConfigurationManager.AppSettings["IsTestEnvironment"] ?? "false");
-            _sslValidator = sslValidator ?? new SecureSslValidationService(isTestEnvironment: _isTestEnvironment);
+            var isTestEnvironment = bool.Parse(ConfigurationManager.AppSettings["IsTestEnvironment"] ?? "false");
+            var timeoutSec = int.Parse(ConfigurationManager.AppSettings["TimeoutSec"] ?? "10");
+            var certPath = ConfigurationManager.AppSettings["PeppolP12FilePath"];
+            var certPwd = ConfigurationManager.AppSettings["PeppolP12Password"];
+            
+            var sslValidator = new SecureSslValidationService(isTestEnvironment: isTestEnvironment);
+
+            var handler = new HttpClientHandler
+            {
+                ClientCertificateOptions = ClientCertificateOption.Manual,
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
+            };
+
+            if (!string.IsNullOrEmpty(certPath))
+            {
+                var cert = new X509Certificate2(certPath, certPwd, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable);
+                handler.ClientCertificates.Add(cert);
+            }
+            
+            // This callback validates the server certificate but cannot perform per-host SSL pinning
+            // because the .NET Framework HttpClientHandler does not expose the request URI here.
+            // This is a trade-off to fix the socket exhaustion issue by reusing the HttpClient.
+            handler.ServerCertificateCustomValidationCallback = (sender, serverCert, chain, sslErrors) =>
+                sslValidator.ValidateServerCertificate(sender, serverCert, chain, sslErrors, null);
+
+            _httpClient = new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(timeoutSec)
+            };
+        }
+        
+        /// <param name="smpDomain">e.g. acc.edelivery.tech.ec.europa.eu (test), edelivery.tech.ec.europa.eu (prod)</param>
+        public SmkSmpLookupService(string smpDomain = null)
+        {
+            smpDomain = smpDomain ?? ConfigurationManager.AppSettings["SmpDomain"] ?? "smp-test.peppol.org";
             _smpDomains = new List<string> { smpDomain };
             _retryCount = int.Parse(ConfigurationManager.AppSettings["RetryCount"] ?? "3");
             _initialDelayMs = int.Parse(ConfigurationManager.AppSettings["InitialDelayMs"] ?? "500");
@@ -59,7 +82,7 @@ namespace PeppolSG.API.Service
             var fullPid = $"{participantScheme}::{participantId}";
             var encodedPid = HttpUtility.UrlEncode(fullPid);
             var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
-            var url = $"http://{_smpDomain}/{encodedPid}/services/{encodedDocType}";
+            var url = $"http://{_smpDomains[0]}/{encodedPid}/services/{encodedDocType}";
             //log.Info($"Constructed Peppol EDN SMP ServiceMetadata URL: {url}");
             return url;
         }
@@ -131,22 +154,7 @@ namespace PeppolSG.API.Service
             var requestUri = new Uri(smpUrl);
             log.Info($"Querying SMP {smpUrl}");
 
-            var cert = new X509Certificate2(_certPath, _certPwd, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable);
-            var handler = new HttpClientHandler
-            {
-                ClientCertificateOptions = ClientCertificateOption.Manual
-            };
-            handler.ClientCertificates.Add(cert);
-            handler.ServerCertificateCustomValidationCallback = (sender, serverCert, chain, sslErrors) =>
-                _sslValidator.ValidateServerCertificate(sender, serverCert, chain, sslErrors, requestUri);
-            handler.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
-
-            using var httpClient = new HttpClient(handler)
-            {
-                Timeout = TimeSpan.FromSeconds(_timeoutSec)
-            };
-
-            var response = await httpClient.GetAsync(requestUri);
+            var response = await _httpClient.GetAsync(requestUri);
             if (!response.IsSuccessStatusCode)
                 throw new Exception($"SMP HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
             var xml = await response.Content.ReadAsStringAsync();

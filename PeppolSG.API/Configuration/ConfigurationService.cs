@@ -15,7 +15,7 @@ namespace PeppolSG.API.Configuration
     public static class ConfigurationService
     {
         private static readonly ILog log = LogManager.GetLogger(typeof(ConfigurationService));
-        private static readonly Dictionary<string, string> _cache = new();
+        private static readonly Dictionary<string, string> _cache = new Dictionary<string, string>();
         private static readonly string[] _mandatoryKeys = new[]
         {
             "PeppolP12FilePath",
