@@ -8,11 +8,18 @@
 This plan outlines the steps required to make the PeppolSG.API codebase fully compliant with C# 7.3 language version while maintaining functionality and code quality.
 
 ## Executive Summary
-- **Total Issues Found**: 5 incompatible language features
-- **Affected Files**: 4 source files
+- **Total Issues Found**: 8 incompatible language features (3 additional found during audit)
+- **Affected Files**: 6 source files
 - **Risk Level**: LOW (syntactic changes only)
 - **Estimated Time**: 2-3 hours
 - **Breaking Changes**: None expected
+
+## Audit Summary ✅
+**Comprehensive audit performed**: December 2024  
+**Additional issues found**:
+- ✅ 3 additional `using var` declarations (C# 8 feature) fixed
+- ✅ All language version issues now resolved
+- ✅ No remaining C# 8+ features detected
 
 ## Implementation Summary ✅
 **Implementation Date**: December 2024  
@@ -89,6 +96,40 @@ This plan outlines the steps required to make the PeppolSG.API codebase fully co
   
   // AFTER (C# 7.3)
   smpDomain = smpDomain ?? ConfigurationManager.AppSettings["SmpDomain"] ?? "smp-test.peppol.org";
+  ```
+
+### TASK-LANG-008: Fix Using var Declarations (C# 8 → 7.3) [AUDIT DISCOVERY]
+**Priority**: HIGH  
+**Status**: ✅ COMPLETED
+
+**File**: `PeppolSG.API/Service/AttachmentSecurityService.cs`
+- **Lines 55-57**: 
+  ```csharp
+  // BEFORE (C# 8)
+  using var input = new MemoryStream(gzBytes);
+  using var gzip = new GZipStream(input, CompressionMode.Decompress);
+  using var output = new MemoryStream();
+  
+  // AFTER (C# 7.3)
+  using (var input = new MemoryStream(gzBytes))
+  using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+  using (var output = new MemoryStream())
+  {
+      // method body
+  }
+  ```
+
+**File**: `PeppolSG.API.Tests/AttachmentSecurityTests.cs`
+- **Lines 19, 37**:
+  ```csharp
+  // BEFORE (C# 8)
+  using var gzip = new GZipStream(ms, CompressionLevel.Optimal, true);
+  
+  // AFTER (C# 7.3)
+  using (var gzip = new GZipStream(ms, CompressionLevel.Optimal, true))
+  {
+      // usage code
+  }
   ```
 
 ## Validation & Testing

@@ -17,9 +17,11 @@ namespace PeppolSG.API.Tests
             byte[] gz;
             using (var ms = new MemoryStream())
             {
-                using var gzip = new GZipStream(ms, CompressionLevel.Optimal, true);
-                gzip.Write(original, 0, original.Length);
-                gzip.Close();
+                using (var gzip = new GZipStream(ms, CompressionLevel.Optimal, true))
+                {
+                    gzip.Write(original, 0, original.Length);
+                    gzip.Close();
+                }
                 gz = ms.ToArray();
             }
             var result = AttachmentSecurityService.SecureGzipDecompress(gz);
@@ -35,9 +37,11 @@ namespace PeppolSG.API.Tests
             byte[] gz;
             using (var ms = new MemoryStream())
             {
-                using var gzip = new GZipStream(ms, CompressionLevel.Optimal, true);
-                gzip.Write(large, 0, large.Length);
-                gzip.Close();
+                using (var gzip = new GZipStream(ms, CompressionLevel.Optimal, true))
+                {
+                    gzip.Write(large, 0, large.Length);
+                    gzip.Close();
+                }
                 gz = ms.ToArray();
             }
             // manipulate config ratio? assume default 100, our ratio maybe >100, worst-case maybe less; ensure fail by lowering ratio internally? We'll trust >100.

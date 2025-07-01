@@ -53,33 +53,34 @@ namespace PeppolSG.API.Service
             if (expansionThreshold > maxDecompressedBytes)
                 expansionThreshold = maxDecompressedBytes;
 
-            using var input = new MemoryStream(gzBytes);
-            using var gzip = new GZipStream(input, CompressionMode.Decompress);
-            using var output = new MemoryStream();
-
-            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(8192);
-            try
+            using (var input = new MemoryStream(gzBytes))
+            using (var gzip = new GZipStream(input, CompressionMode.Decompress))
+            using (var output = new MemoryStream())
             {
-                int read;
-                long total = 0;
-                while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0)
+                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(8192);
+                try
                 {
-                    total += read;
-                    if (total > expansionThreshold)
-                        throw new Exception("GZIP bomb detected – expansion ratio exceeded.");
-                    output.Write(buffer, 0, read);
+                    int read;
+                    long total = 0;
+                    while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        total += read;
+                        if (total > expansionThreshold)
+                            throw new Exception("GZIP bomb detected – expansion ratio exceeded.");
+                        output.Write(buffer, 0, read);
+                    }
                 }
-            }
-            finally
-            {
-                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
-            }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                }
 
-            if (total > maxDecompressedBytes)
-                throw new Exception("Decompressed data exceeds maximum allowed size.");
+                if (total > maxDecompressedBytes)
+                    throw new Exception("Decompressed data exceeds maximum allowed size.");
 
-            log.Debug($"SecureGzipDecompress – compressed {gzBytes.Length} bytes → {total} bytes");
-            return output.ToArray();
+                log.Debug($"SecureGzipDecompress – compressed {gzBytes.Length} bytes → {total} bytes");
+                return output.ToArray();
+            }
         }
     }
 } 
