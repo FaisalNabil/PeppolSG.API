@@ -61,7 +61,7 @@ namespace PeppolSG.API.Service
             log.Info($"Performing live SMP lookup for {participantId}");
 
             // Perform SMP lookup
-            var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId);
+            var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId, processId);
             var serviceMetadata = await GetServiceMetadata(smpUrl);
 
             if (serviceMetadata == null || serviceMetadata.ServiceInformation == null)
@@ -95,7 +95,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Constructs the SMP URL based on the Peppol SMP specification.
         /// </summary>
-        private string BuildSmpUrl(string participantScheme, string participantId, string documentTypeId)
+        private string BuildSmpUrl(string participantScheme, string participantId, string documentTypeId, string processId)
         {
             // 1. Create MD5 hash of the participant identifier
             var fullIdentifier = $"{participantScheme}::{participantId}";
@@ -105,7 +105,8 @@ namespace PeppolSG.API.Service
             // 2. Construct the URL
             var smpDomain = _configService.SmpDomain;
             var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
-            var url = $"https://{smpDomain}/{hashedIdentifier}/services/{encodedDocType}";
+            var encodedProcess = HttpUtility.UrlEncode(processId);
+            var url = $"https://{smpDomain}/{hashedIdentifier}/services/{encodedDocType}/{encodedProcess}";
             
             log.Debug($"Constructed SMP URL: {url}");
             return url;
