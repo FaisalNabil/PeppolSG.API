@@ -202,10 +202,25 @@
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>
     </Compile>
+    <Compile Include="Models\As4InboundMetadata.cs" />
+    <Compile Include="Models\MimePart.cs" />
+    <Compile Include="Models\PeppolHeaderInfo.cs" />
+    <Compile Include="Models\SmpModels.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Service\As4MessageBuilder.cs" />
     <Compile Include="Service\AttachmentSignatureTransform.cs" />
+    <Compile Include="Service\CertificateManager.cs" />
+    <Compile Include="Service\Interfaces\IAs4MessageBuilder.cs" />
+    <Compile Include="Service\Interfaces\ICertificateManager.cs" />
+    <Compile Include="Service\Interfaces\IMimeParserService.cs" />
+    <Compile Include="Service\Interfaces\IPeppolAs4MessageValidator.cs" />
+    <Compile Include="Service\Interfaces\IPeppolAs4Signer.cs" />
+    <Compile Include="Service\Interfaces\IPeppolConfigurationService.cs" />
+    <Compile Include="Service\Interfaces\ISmkSmpLookupService.cs" />
+    <Compile Include="Service\MimeParserService.cs" />
+    <Compile Include="Service\PeppolAs4MessageValidator.cs" />
     <Compile Include="Service\PeppolAs4Signer.cs" />
+    <Compile Include="Service\PeppolConfigurationService.cs" />
     <Compile Include="Service\SignedXmlWithId.cs" />
     <Compile Include="Service\SmkSmpLookupService.cs" />
     <Compile Include="Service\SOAPHeaderParser.cs" />

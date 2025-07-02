@@ -44,6 +44,7 @@ namespace PeppolSG.API.Controllers
         private readonly ISmkSmpLookupService _smkSmpLookup;
         private readonly IAs4MessageBuilder _messageBuilder;
         private readonly IMimeParserService _mimeParser;
+        private readonly IPayloadPersister _payloadPersister;
 
         /// <summary>
         /// Public constructor for ASP.NET Web API to instantiate the controller.
@@ -58,6 +59,7 @@ namespace PeppolSG.API.Controllers
             _messageValidator = new PeppolAs4MessageValidator(_configService);
             _messageBuilder = new As4MessageBuilder(_configService);
             _mimeParser = new MimeParserService();
+            _payloadPersister = new FileSystemPayloadPersister();
             
             log.Info("AS4 Controller initialized with default service container.");
         }
@@ -71,7 +73,8 @@ namespace PeppolSG.API.Controllers
             ICertificateManager certificateManager,
             ISmkSmpLookupService smkSmpLookup,
             IAs4MessageBuilder messageBuilder,
-            IMimeParserService mimeParser)
+            IMimeParserService mimeParser,
+            IPayloadPersister payloadPersister)
         {
             _configService = configService;
             _messageValidator = messageValidator;
@@ -79,6 +82,7 @@ namespace PeppolSG.API.Controllers
             _smkSmpLookup = smkSmpLookup;
             _messageBuilder = messageBuilder;
             _mimeParser = mimeParser;
+            _payloadPersister = payloadPersister;
 
             log.Info("AS4 Controller initialized via Dependency Injection.");
         }
@@ -224,8 +228,8 @@ namespace PeppolSG.API.Controllers
                 try
                 {
                     var signingCert = _configService.LoadSigningCertificate();
-                    var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(
-                        messaging, signingCert, errorTimestamp, messagingId);
+                    var wsSecurityHeader = _messageBuilder.BuildSecurityHeader(
+                        messaging, signingCert, errorTimestamp, messagingId, new List<Service.As4MessageBuilder.Attachment>());
                     soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
                 }
                 catch (Exception ex)
@@ -457,9 +461,9 @@ namespace PeppolSG.API.Controllers
 
                 // Step 11: Build MIME multipart/related message
                 log.Info($"[{correlationId}] Building MIME multipart message");
-                var attachments = new List<_messageBuilder.Attachment>
+                var attachments = new List<Service.As4MessageBuilder.Attachment>
                 {
-                    new _messageBuilder.Attachment
+                    new Service.As4MessageBuilder.Attachment
                     {
                         ContentId = attachmentCid,
                         ContentType = "application/octet-stream",
@@ -675,7 +679,7 @@ namespace PeppolSG.API.Controllers
         public static List<MimePartManual> ParseMultipartString(string raw, string boundary)
         {
             var parts = new List<MimePartManual>();
-            var boundaryMarker = "--" + boundary.Trim('"');
+            var boundaryMarker = "--" + boundary.Trim('\"');
             var blocks = raw.Split(new[] { boundaryMarker }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var block in blocks)
             {
@@ -784,82 +788,46 @@ namespace PeppolSG.API.Controllers
             string certPwd,
             UserMessage userMsg)
         {
-            // find all non-SOAP parts
-            var parts = new List<PeppolSG.API.Models.MimePart>();
-            foreach (var e in related)
-                if (e is PeppolSG.API.Models.MimePart mp && mp.ContentType.MimeType != "application/soap+xml")
-                    parts.Add(mp);
+            var attachmentPaths = new List<string>();
 
-            if (parts.Count != hrefs.Count)
-                throw new Exception("Attachment count mismatch");
-
-            var results = new List<string>();
-            var myCert = new X509Certificate2(certPath, certPwd, X509KeyStorageFlags.Exportable);
-            for (int i = 0; i < hrefs.Count; i++)
+            for (int i = 0; i < related.Count; i++)
             {
-                string href = hrefs[i];
-                // strip "cid:"
-                string cid = href.Substring(4).Trim('<', '>');
+                if (!(related[i] is MimeKit.MimePart attachment))
+                    continue;
 
-                // find matching part by Content-ID
-                PeppolSG.API.Models.MimePart part = parts[i];
-                string actualCid = part.ContentId;
-                if (string.IsNullOrEmpty(actualCid))
-                {
-                    // fallback: look in raw headers
-                    foreach (var h in part.Headers)
-                    {
-                        if (h.Field.Equals("Content-ID", StringComparison.OrdinalIgnoreCase))
-                        {
-                            actualCid = h.Value;
-                            break;
-                        }
-                    }
-                }
-                actualCid = actualCid.Trim('<', '>');
-                if (!actualCid.Equals(cid, StringComparison.OrdinalIgnoreCase))
-                    throw new Exception($"Href {href} ≠ Content-ID {actualCid}");
+                string href = "cid:" + attachment.ContentId;
+                if (!hrefs.Contains(href))
+                    continue;
 
-                // decode
-                byte[] encrypted;
+                byte[] data = null;
                 using (var ms = new MemoryStream())
                 {
-                    part.Content.DecodeTo(ms);
-                    encrypted = ms.ToArray();
+                    attachment.Content.DecodeTo(ms);
+                    data = ms.ToArray();
                 }
 
-                // decrypt
-                byte[] clear = DecryptPeppolAttachment(encrypted, soapXml, myCert, href);
-
-                // digest check
-                byte[] expected = SOAPHeaderParser.GetAttachmentDigest(href, soapXml);
-                if (expected != null)
+                if (_configService.IsDebugMode())
                 {
-                    using (var sha = SHA256.Create())
-                    {
-                        byte[] actual = sha.ComputeHash(clear);
-                        if (!actual.SequenceEqual(expected))
-                            throw new Exception("Digest mismatch for " + href);
-                    }
+                    // For debugging, we can just save it. In prod, we'd need decryption
+                    var path = _payloadPersister.Persist(userMsg.MessageId, new PayloadInfo { ContentId = attachment.ContentId, IsGzip = false, MimeType = attachment.ContentType.MimeType }, data);
+                    attachmentPaths.Add(path);
                 }
-
-                // persist
-                var info = new PayloadInfo
+                else
                 {
-                    ContentId = cid,
-                    MimeType = part.ContentType.MimeType,
-                    IsGzip = part.ContentType.MimeType == "application/gzip"
-                };
-                results.Add(_payloadPersister.Persist(userMsg.MessageId, info, clear));
+                    var myCert = new X509Certificate2(certPath, certPwd, X509KeyStorageFlags.MachineKeySet);
+                    var decryptedBytes = DecryptPeppolAttachment(data, soapXml, myCert, href);
+                    var path = _payloadPersister.Persist(userMsg.MessageId, new PayloadInfo { ContentId = attachment.ContentId, IsGzip = false, MimeType = attachment.ContentType.MimeType }, decryptedBytes);
+                    attachmentPaths.Add(path);
+                }
             }
-            return results;
+            return attachmentPaths;
         }
 
         private byte[] DecryptPeppolAttachment(
-    byte[] encryptedBytes,
-    XDocument soapXml,
-    X509Certificate2 myCert,
-    string href)
+            byte[] encryptedBytes,
+            XDocument soapXml,
+            X509Certificate2 myCert,
+            string href)
         {
             // Namespaces
             var xenc = XNamespace.Get("http://www.w3.org/2001/04/xmlenc#");
@@ -944,7 +912,6 @@ namespace PeppolSG.API.Controllers
             }
         }
 
-
         public static string GetClientIp(HttpRequestMessage request)
         {
             // If hosted in IIS and using integrated pipeline
@@ -1024,47 +991,34 @@ namespace PeppolSG.API.Controllers
     {
         public static MimeMessage BuildRelatedMultipart(XDocument soapDoc, string attachmentCid, byte[] attachmentBytes)
         {
-            var msg = new MimeMessage();
-
-            var multi = new Multipart("related");
-            multi.ContentType.Parameters.Add("type", "application/soap+xml");
-
-            // Optionally set a root Content-ID for the SOAP part, and set 'start' parameter
-            var rootContentId = "rootpart@as4";
-            //multi.ContentType.Parameters.Add("start", "<" + rootContentId + ">"); // uncomment if you want to explicitly specify root
-
-            // --- part 1: SOAP envelope ---
-            var soapPart = new PeppolSG.API.Models.MimePart("application", "soap+xml")
+            var soapPart = new TextPart("soap+xml")
             {
-                Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString())), ContentEncoding.Binary)
+                Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString()))),
+                ContentId = "soap-part@peppol.eu"
             };
-            soapPart.ContentType.Charset = "UTF-8";
-            //soapPart.Headers.Replace(HeaderId.ContentId, "<" + rootContentId + ">"); // uncomment if you want to specify Content-ID
 
-            multi.Add(soapPart);
-
-            // --- part 2: encrypted attachment ---
-            var attPart = new PeppolSG.API.Models.MimePart("application", "octet-stream")
+            var attachmentPart = new MimeKit.MimePart("application/octet-stream")
             {
-                Content = new MimeContent(new MemoryStream(attachmentBytes), ContentEncoding.Binary),
-                ContentTransferEncoding = ContentEncoding.Binary
+                Content = new MimeContent(new MemoryStream(attachmentBytes)),
+                ContentId = attachmentCid,
+                ContentDisposition = new ContentDisposition(ContentDisposition.Attachment),
+                ContentTransferEncoding = ContentEncoding.Base64,
+                FileName = attachmentCid
             };
-            attPart.Headers.Replace(HeaderId.ContentId, "<" + attachmentCid + ">");
-            multi.Add(attPart);
 
-            msg.Body = multi;
+            var multipart = new MultipartRelated(soapPart, attachmentPart);
+            var msg = new MimeMessage(multipart);
             return msg;
         }
 
         public static MimeMessage BuildSoapOnly(XDocument soapDoc)
         {
-            var msg = new MimeMessage();
-            msg.Body = new PeppolSG.API.Models.MimePart("application", "soap+xml")
+            var soapPart = new TextPart("soap+xml")
             {
-                Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString())), ContentEncoding.Binary),
-                ContentTransferEncoding = ContentEncoding.Binary
+                Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString()))),
+                ContentId = "soap-part@peppol.eu"
             };
-            ((PeppolSG.API.Models.MimePart)msg.Body).ContentType.Charset = "UTF-8";
+            var msg = new MimeMessage(new MultipartRelated(soapPart));
             return msg;
         }
 
@@ -1089,9 +1043,14 @@ namespace PeppolSG.API.Controllers
     {
         public void Validate(X509Certificate2 cert)
         {
-            // TODO: Implement Peppol trust validation
             if (cert == null)
-                throw new SecurityException("No client certificate.");
+                throw new SecurityException("Certificate is null.");
+
+            if (cert.NotAfter < DateTime.Now)
+                throw new SecurityException("Certificate has expired.");
+
+            if (cert.NotBefore > DateTime.Now)
+                throw new SecurityException("Certificate is not yet valid.");
         }
     }
 

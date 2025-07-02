@@ -24,6 +24,8 @@ namespace PeppolSG.API.Service
         public string ConversationId { get; set; }
         public string FromPartyId { get; set; }
         public string ToPartyId { get; set; }
+        public string FromPartyIdType { get; set; }
+        public string ToPartyIdType { get; set; }
         public string Service { get; set; }
         public string Action { get; set; }
         public List<string> PayloadHrefs { get; set; }
@@ -142,9 +144,17 @@ namespace PeppolSG.API.Service
                 .Elements().FirstOrDefault(e => e.Name.LocalName == "From")?
                 .Elements().FirstOrDefault(e => e.Name.LocalName == "PartyId")?.Value;
 
+            var fromPartyIdType = partyInfo?
+                .Elements().FirstOrDefault(e => e.Name.LocalName == "From")?
+                .Elements().FirstOrDefault(e => e.Name.LocalName == "PartyId")?.Attribute("type")?.Value;
+
             var toPartyId = partyInfo?
                 .Elements().FirstOrDefault(e => e.Name.LocalName == "To")?
                 .Elements().FirstOrDefault(e => e.Name.LocalName == "PartyId")?.Value;
+            
+            var toPartyIdType = partyInfo?
+                .Elements().FirstOrDefault(e => e.Name.LocalName == "To")?
+                .Elements().FirstOrDefault(e => e.Name.LocalName == "PartyId")?.Attribute("type")?.Value;
 
             // Properties
             var messageProperties = userMessageNode.Elements()
@@ -171,6 +181,8 @@ namespace PeppolSG.API.Service
                 Action = collaborationInfo?.Elements().FirstOrDefault(e => e.Name.LocalName == "Action")?.Value,
                 FromPartyId = fromPartyId,
                 ToPartyId = toPartyId,
+                FromPartyIdType = fromPartyIdType,
+                ToPartyIdType = toPartyIdType,
                 PayloadHrefs = payloadHrefs,
                 Properties = properties ?? new Dictionary<string, string>()
             };

@@ -40,6 +40,9 @@ namespace PeppolSG.API.Service
             {
                 log.Debug($"Starting validation for {messageType}");
 
+                // Extract MessageId early for context in errors
+                result.MessageId = soapMessage.Descendants(EB + "MessageInfo").FirstOrDefault()?.Element(EB + "MessageId")?.Value;
+
                 // 1. Validate SOAP envelope structure
                 ValidateSoapEnvelope(soapMessage, result);
 
@@ -595,6 +598,7 @@ namespace PeppolSG.API.Service
         public List<ValidationError> Warnings { get; } = new List<ValidationError>();
 
         public bool IsValid => Errors.Count == 0;
+        public string MessageId { get; set; }
 
         public void AddError(string code, string message)
         {
@@ -634,5 +638,10 @@ namespace PeppolSG.API.Service
         public string Code { get; set; }
         public string Message { get; set; }
         public string Severity { get; set; }
+        public string Description
+        {
+            get => Message;
+            set => Message = value;
+        }
     }
 } 
