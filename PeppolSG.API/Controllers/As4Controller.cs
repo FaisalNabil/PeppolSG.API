@@ -1086,7 +1086,7 @@ namespace PeppolSG.API.Controllers
             var dir = Path.Combine(_configService.InboundStoragePath, metadata.MessageId);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "metadata.json"),
-                System.Text.Json.JsonSerializer.Serialize(metadata));
+                Newtonsoft.Json.JsonConvert.SerializeObject(metadata));
         }
     }
 
