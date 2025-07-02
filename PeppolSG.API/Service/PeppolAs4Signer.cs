@@ -12,16 +12,23 @@ using System.Xml;
 
 namespace PeppolSG.API.Service
 {
+    /// <summary>
+    /// Enhanced Peppol AS4 Signer for WS-Security 1.1.1 compliance
+    /// Implements eDelivery AS4 Profile v1.1.0 signature requirements
+    /// </summary>
     public static class PeppolAs4Signer
     {
         private static readonly log4net.ILog log = log4net.LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
+        // WS-Security namespaces
         private static readonly XNamespace XENC = "http://www.w3.org/2001/04/xmlenc#";
         private static readonly XNamespace XENC11 = "http://www.w3.org/2009/xmlenc11#";
         private static readonly XNamespace DS = SignedXml.XmlDsigNamespaceUrl;
-        private static readonly XNamespace WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0.xsd";
+        private static readonly XNamespace WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
+        private static readonly XNamespace WSSE11 = "http://docs.oasis-open.org/wss/oasis-wss-wssecurity-secext-1.1.xsd";
         private static readonly XNamespace WSU = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
+        private static readonly XNamespace S12 = "http://www.w3.org/2003/05/soap-envelope";
 
         /// <summary>
         /// Sign the SOAP envelope, encrypting an attachment if requested.
@@ -120,7 +127,7 @@ namespace PeppolSG.API.Service
 
             // Build the <wsse:SecurityTokenReference>
             var strElement = doc.CreateElement("wsse", "SecurityTokenReference");
-            // !!! here’s the fix: use the namespace URI string, not an XName !!!
+            // !!! here's the fix: use the namespace URI string, not an XName !!!
             strElement.SetAttribute("Id", wsuNs, "STR-" + Guid.NewGuid().ToString("N"));
 
             // Build the inner <wsse:Reference>
@@ -164,7 +171,306 @@ namespace PeppolSG.API.Service
             }
         }
 
+        /// <summary>
+        /// Builds WS-Security header with timestamp and certificate for WS-Security 1.1.1
+        /// This is the enhanced method used by the AS4 controller
+        /// </summary>
+        public static XElement BuildWsSecurityHeader(
+            XElement messaging,
+            X509Certificate2 signingCert,
+            string timestamp,
+            string messagingId)
+        {
+            if (messaging == null) throw new ArgumentNullException(nameof(messaging));
+            if (signingCert == null) throw new ArgumentNullException(nameof(signingCert));
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
 
+            log.Debug($"Building WS-Security header with timestamp: {timestamp}");
+
+            // Generate unique IDs for WS-Security elements
+            var timestampId = "TS-" + Guid.NewGuid().ToString("N");
+            var bstId = "BST-" + Guid.NewGuid().ToString("N");
+
+            try
+            {
+                // Build Timestamp token (mandatory for WS-Security 1.1.1)
+                var timestampElement = BuildTimestampToken(timestamp, timestampId);
+
+                // Build Binary Security Token with certificate
+                var binarySecurityToken = BuildBinarySecurityToken(signingCert, bstId);
+
+                // Create WS-Security header with proper namespace declarations
+                var wsSecurityHeader = new XElement(WSSE + "Security",
+                    new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
+                    new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
+                    new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
+                    new XAttribute(S12 + "mustUnderstand", "1"),
+                    new XAttribute(S12 + "role", "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/role/ebms"),
+                    timestampElement,
+                    binarySecurityToken
+                    // Note: Digital signature will be added later by SignEnvelope method
+                );
+
+                log.Debug("WS-Security header built successfully");
+                return wsSecurityHeader;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Failed to build WS-Security header: {ex.Message}", ex);
+                throw new InvalidOperationException($"WS-Security header creation failed: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Builds Timestamp token according to WS-Security 1.1.1 specification
+        /// </summary>
+        public static XElement BuildTimestampToken(string timestamp, string timestampId)
+        {
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
+            if (string.IsNullOrEmpty(timestampId)) throw new ArgumentNullException(nameof(timestampId));
+
+            var createdTime = DateTime.Parse(timestamp);
+            var expiresTime = createdTime.AddMinutes(5); // 5-minute validity window
+
+            return new XElement(WSU + "Timestamp",
+                new XAttribute(WSU + "Id", timestampId),
+                new XElement(WSU + "Created", createdTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")),
+                new XElement(WSU + "Expires", expiresTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
+            );
+        }
+
+        /// <summary>
+        /// Builds Binary Security Token with proper X.509 certificate encoding
+        /// </summary>
+        public static XElement BuildBinarySecurityToken(X509Certificate2 certificate, string bstId)
+        {
+            if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+            if (string.IsNullOrEmpty(bstId)) throw new ArgumentNullException(nameof(bstId));
+
+            return new XElement(WSSE + "BinarySecurityToken",
+                new XAttribute("EncodingType",
+                    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"),
+                new XAttribute("ValueType",
+                    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"),
+                new XAttribute(WSU + "Id", bstId),
+                Convert.ToBase64String(certificate.RawData)
+            );
+        }
+
+        /// <summary>
+        /// Verifies incoming AS4 message signature according to WS-Security 1.1.1
+        /// </summary>
+        public static bool VerifyMessageSignature(XDocument soapEnvelope, X509Certificate2 senderCertificate)
+        {
+            if (soapEnvelope == null) throw new ArgumentNullException(nameof(soapEnvelope));
+            if (senderCertificate == null) throw new ArgumentNullException(nameof(senderCertificate));
+
+            try
+            {
+                log.Debug("Starting signature verification for incoming AS4 message");
+
+                // Convert to XmlDocument for SignedXml processing
+                var xmlDoc = new XmlDocument { PreserveWhitespace = true };
+                using (var reader = soapEnvelope.CreateReader())
+                    xmlDoc.Load(reader);
+
+                // Find the signature element
+                var nsManager = new XmlNamespaceManager(xmlDoc.NameTable);
+                nsManager.AddNamespace("ds", DS.NamespaceName);
+                nsManager.AddNamespace("wsse", WSSE.NamespaceName);
+
+                var signatureNode = xmlDoc.SelectSingleNode("//ds:Signature", nsManager) as XmlElement;
+                if (signatureNode == null)
+                {
+                    log.Warn("No signature found in AS4 message");
+                    return false;
+                }
+
+                // Verify the signature
+                var signedXml = new SignedXml(xmlDoc);
+                signedXml.LoadXml(signatureNode);
+
+                // Check signature using sender certificate
+                bool isSignatureValid = signedXml.CheckSignature(senderCertificate, true);
+                
+                if (isSignatureValid)
+                {
+                    log.Info("AS4 message signature verification successful");
+                    
+                    // Additional validation: verify timestamp if present
+                    var timestampValid = VerifyTimestamp(xmlDoc);
+                    if (!timestampValid)
+                    {
+                        log.Warn("Timestamp validation failed");
+                        return false;
+                    }
+                }
+                else
+                {
+                    log.Error("AS4 message signature verification failed");
+                }
+
+                return isSignatureValid;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Signature verification error: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Verifies timestamp token validity in WS-Security header
+        /// </summary>
+        public static bool VerifyTimestamp(XmlDocument xmlDoc)
+        {
+            try
+            {
+                var nsManager = new XmlNamespaceManager(xmlDoc.NameTable);
+                nsManager.AddNamespace("wsu", WSU.NamespaceName);
+
+                var timestampNode = xmlDoc.SelectSingleNode("//wsu:Timestamp", nsManager);
+                if (timestampNode == null)
+                {
+                    log.Debug("No timestamp found in message");
+                    return true; // Timestamp is optional in some scenarios
+                }
+
+                var createdNode = timestampNode.SelectSingleNode("wsu:Created", nsManager);
+                var expiresNode = timestampNode.SelectSingleNode("wsu:Expires", nsManager);
+
+                if (createdNode == null)
+                {
+                    log.Warn("Timestamp missing Created element");
+                    return false;
+                }
+
+                var created = DateTime.Parse(createdNode.InnerText);
+                var now = DateTime.UtcNow;
+
+                // Check if message is not from the future (with 1 minute tolerance)
+                if (created > now.AddMinutes(1))
+                {
+                    log.Warn($"Message timestamp is in the future: {created} > {now}");
+                    return false;
+                }
+
+                // Check expiration if present
+                if (expiresNode != null)
+                {
+                    var expires = DateTime.Parse(expiresNode.InnerText);
+                    if (now > expires)
+                    {
+                        log.Warn($"Message timestamp has expired: {now} > {expires}");
+                        return false;
+                    }
+                }
+
+                // Check if message is not too old (24 hours tolerance)
+                if (created < now.AddHours(-24))
+                {
+                    log.Warn($"Message timestamp is too old: {created} < {now.AddHours(-24)}");
+                    return false;
+                }
+
+                log.Debug("Timestamp validation successful");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Timestamp verification error: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Validates certificate chain against Peppol PKI requirements
+        /// </summary>
+        public static bool ValidateCertificateChain(X509Certificate2 certificate)
+        {
+            if (certificate == null) throw new ArgumentNullException(nameof(certificate));
+
+            try
+            {
+                log.Debug($"Validating certificate chain for: {certificate.Subject}");
+
+                // Create certificate chain
+                var chain = new X509Chain();
+                
+                // Configure chain validation settings for Peppol
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.Online;
+                chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;
+                chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+                chain.ChainPolicy.VerificationTime = DateTime.Now;
+                chain.ChainPolicy.UrlRetrievalTimeout = new TimeSpan(0, 1, 0); // 1 minute timeout
+
+                // Build the chain
+                bool chainIsValid = chain.Build(certificate);
+
+                if (!chainIsValid)
+                {
+                    log.Warn("Certificate chain validation failed:");
+                    foreach (X509ChainStatus status in chain.ChainStatus)
+                    {
+                        log.Warn($"Chain status: {status.Status} - {status.StatusInformation}");
+                    }
+                }
+                else
+                {
+                    log.Info("Certificate chain validation successful");
+                }
+
+                // Additional Peppol-specific validations
+                if (chainIsValid)
+                {
+                    chainIsValid = ValidatePeppolCertificateUsage(certificate);
+                }
+
+                return chainIsValid;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Certificate chain validation error: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Validates certificate for Peppol-specific usage requirements
+        /// </summary>
+        private static bool ValidatePeppolCertificateUsage(X509Certificate2 certificate)
+        {
+            try
+            {
+                // Check certificate validity period
+                if (DateTime.Now < certificate.NotBefore || DateTime.Now > certificate.NotAfter)
+                {
+                    log.Warn($"Certificate not valid for current time: {certificate.NotBefore} - {certificate.NotAfter}");
+                    return false;
+                }
+
+                // Check key usage for digital signature
+                foreach (var extension in certificate.Extensions)
+                {
+                    if (extension is X509KeyUsageExtension keyUsage)
+                    {
+                        if (!keyUsage.KeyUsages.HasFlag(X509KeyUsageFlags.DigitalSignature))
+                        {
+                            log.Warn("Certificate does not have DigitalSignature key usage");
+                            return false;
+                        }
+                    }
+                }
+
+                log.Debug("Peppol certificate usage validation successful");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Peppol certificate usage validation error: {ex.Message}", ex);
+                return false;
+            }
+        }
     }
 
     static class XElementExtensions

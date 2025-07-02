@@ -1,272 +1,310 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Net;
-using System.Security.Cryptography.X509Certificates;
+using System.Net.Http;
 using System.Security.Cryptography;
-using System.Security;
-using System.Text;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
-using System.Web;
 using System.Web.Http;
-using System.Web.Mvc;
 using System.Xml.Linq;
-using System.Xml;
-using WebGrease;
-using RoutePrefixAttribute = System.Web.Http.RoutePrefixAttribute;
-using HttpPostAttribute = System.Web.Http.HttpPostAttribute;
-using RouteAttribute = System.Web.Http.RouteAttribute;
+using PeppolSG.API.Models;
 using PeppolSG.API.Service;
 using System.IO.Compression;
 using System.Runtime.Remoting.Messaging;
 using MimeKit;
-using Org.BouncyCastle.Crypto.Encodings;
-using Org.BouncyCastle.Crypto.Engines;
-using Org.BouncyCastle.Crypto.Digests;
-using Org.BouncyCastle.Security;
-using System.Security.Cryptography.Xml;
+using PeppolSG.API.Service.Interfaces;
 using log4net;
 using LogManager = log4net.LogManager;
-using static Org.BouncyCastle.Crypto.Engines.SM2Engine;
 
 namespace PeppolSG.API.Controllers
 {
+    /// <summary>
+    /// Peppol AS4 Access Point Controller
+    /// Handles sending and receiving of AS4 messages for the Peppol network.
+    /// </summary>
     [RoutePrefix("as4")]
     public class As4Controller : ApiController
     {
         private static readonly ILog log = LogManager.GetLogger(typeof(As4Controller));
-        private readonly ICertificateValidator _certificateValidator = new BasicCertificateValidator();
-        private readonly IMetadataPersister _metadataPersister = new FileSystemMetadataPersister();
-        private readonly IPayloadPersister _payloadPersister = new FileSystemPayloadPersister();
-        private readonly SmkSmpLookupService _smkSmpLookup;
-        private string certPath = ConfigurationManager.AppSettings["PeppolP12FilePath"];
-        private string certPwd = ConfigurationManager.AppSettings["PeppolP12Password"];
+        
+        // Dependencies injected via constructor or property
+        private readonly IPeppolConfigurationService _configService;
+        private readonly IPeppolAs4MessageValidator _messageValidator;
+        private readonly ICertificateManager _certificateManager;
+        private readonly ISmkSmpLookupService _smkSmpLookup;
+        private readonly IAs4MessageBuilder _messageBuilder;
+        private readonly IPeppolAs4Signer _signer;
+        private readonly IMimeParserService _mimeParser;
 
-        public As4Controller(SmkSmpLookupService smkSmpLookup)
+        /// <summary>
+        /// Public constructor for ASP.NET Web API to instantiate the controller.
+        /// This creates a default service container.
+        /// </summary>
+        public As4Controller()
         {
-            _smkSmpLookup = smkSmpLookup;
+            // This is a basic service locator pattern. For a more robust solution, use a DI container like Unity or Autofac.
+            _configService = new PeppolConfigurationService();
+            _certificateManager = new CertificateManager(_configService);
+            _smkSmpLookup = new SmkSmpLookupService(_configService, _certificateManager);
+            _messageValidator = new PeppolAs4MessageValidator(_configService);
+            _messageBuilder = new As4MessageBuilder(_configService);
+            _signer = new PeppolAs4Signer(_configService);
+            _mimeParser = new MimeParserService();
+            
+            log.Info("AS4 Controller initialized with default service container.");
         }
 
+        /// <summary>
+        /// Constructor for dependency injection, used for testing or with a DI container.
+        /// </summary>
+        public As4Controller(
+            IPeppolConfigurationService configService,
+            IPeppolAs4MessageValidator messageValidator,
+            ICertificateManager certificateManager,
+            ISmkSmpLookupService smkSmpLookup,
+            IAs4MessageBuilder messageBuilder,
+            IPeppolAs4Signer signer,
+            IMimeParserService mimeParser)
+        {
+            _configService = configService;
+            _messageValidator = messageValidator;
+            _certificateManager = certificateManager;
+            _smkSmpLookup = smkSmpLookup;
+            _messageBuilder = messageBuilder;
+            _signer = signer;
+            _mimeParser = mimeParser;
 
+            log.Info("AS4 Controller initialized via Dependency Injection.");
+        }
+
+        /// <summary>
+        /// Main AS4 endpoint for receiving Peppol messages
+        /// Handles UserMessage and SignalMessage according to AS4 profile
+        /// </summary>
         [HttpPost, Route("")]
         public async Task<IHttpActionResult> ReceiveAs4Message()
         {
+            var correlationId = Guid.NewGuid().ToString("N");
+            log.Info($"[{correlationId}] AS4 message received.");
+
             try
             {
-                log.Info($"=== Incoming AS4 Request Details ===\n" +
-                        $"URL: {Request.RequestUri}\n" +
-                        $"Method: {Request.Method}\n" +
-                        $"Remote IP: {GetClientIp(Request)}\n" +
-                        $"Headers: {string.Join(", ", Request.Headers.Select(h => $"{h.Key}: {string.Join(", ", h.Value)}"))}");
+                var contentType = Request.Content.Headers.ContentType?.ToString();
+                if (!Request.Content.IsMimeMultipartContent() || !contentType.Contains("related"))
+                {
+                    return await HandleEbms3Error(correlationId, "EBMS:0001", "InvalidHeader", "Content-Type must be multipart/related.", null, HttpStatusCode.BadRequest);
+                }
 
-                var contentType = Request.Content.Headers.ContentType?.ToString() ?? throw new Exception("Missing Content-Type");
-                log.Info($"=== Incoming AS4 Request ===\nContent-Type: {contentType}");
+                var requestStream = await Request.Content.ReadAsStreamAsync();
+                var mimeParts = await _mimeParser.ParseMultipartRequest(requestStream, contentType);
 
-                // Get the boundary string
-                var boundary = contentType.Split(';')
-                    .Select(p => p.Trim())
-                    .FirstOrDefault(p => p.StartsWith("boundary=", StringComparison.OrdinalIgnoreCase))
-                    ?.Substring("boundary=".Length)
-                    .Trim('"');
-                if (string.IsNullOrWhiteSpace(boundary))
-                    throw new Exception("Missing boundary in Content-Type");
-
-                // Read the full request body as a string
-                string bodyText;
-                using (var sr = new StreamReader(await Request.Content.ReadAsStreamAsync(), Encoding.UTF8))
-                    bodyText = sr.ReadToEnd();
-                log.Info($"=== RAW INCOMING AS4 REQUEST BODY START ===\n{bodyText}\n=== RAW INCOMING AS4 REQUEST BODY END ===");
-                // Parse the multipart
-                var mimeParts = ParseMultipartString(bodyText, boundary);
-
-                if (mimeParts.Count == 0)
-                    throw new Exception("No parts found in AS4 message.");
-
-                // Find SOAP part (envelope)
-                var soapPart = mimeParts.FirstOrDefault(p =>
-                    p.ContentType.Contains("application/soap+xml") ||
-                    (p.ContentText != null && p.ContentText.TrimStart().StartsWith("<S12:Envelope"))
-                );
-                if (soapPart == null) throw new Exception("No SOAP part found.");
+                var soapPart = mimeParts.FirstOrDefault(p => p.ContentType.Contains("application/soap+xml"));
+                if (soapPart == null)
+                {
+                    return await HandleEbms3Error(correlationId, "EBMS:0001", "MissingPart", "SOAP part is missing.", null, HttpStatusCode.BadRequest);
+                }
 
                 var soapXml = XDocument.Parse(soapPart.ContentText);
-                log.Info($"=== Parsed SOAP Envelope ===\n{soapXml}");
+                var validationResult = _messageValidator.ValidateIncomingMessage(soapXml);
 
-                // Parse protocol details
-                //var senderCert = SOAPHeaderParser.GetSenderCertificate(soapXml);
-                var sigBytes = SOAPHeaderParser.GetSignature(soapXml);
-                var userMsg = SOAPHeaderParser.GetUserMessage(soapXml);
-                var references = SOAPHeaderParser.GetReferenceListFromSignedInfo(soapXml);
-
-                // Extract identifiers from the received SOAP XML (already have these lines)
-                var originalSenderProp = soapXml.Descendants()
-    .FirstOrDefault(x => x.Name.LocalName == "Property" &&
-                         (string)x.Attribute("name") == "originalSender");
-
-                if (originalSenderProp == null)
-                    throw new Exception("originalSender property missing from message!");
-
-                string senderParticipantId = originalSenderProp?.Value; // e.g., "9922:NGTBCNTRLP1001"
-                string senderScheme = originalSenderProp?.Attribute("type")?.Value ?? "iso6523-actorid-upis";
-
-                //string senderScheme = senderParts[0];          // "iso6523-actorid-upis"
-                //string senderParticipantId = senderParts[1];   // "9922:NGTBCNTRLP1001"
-
-                // Action node for docTypeId
-                string docTypeId = null;
-                var ebAction = soapXml.Descendants().FirstOrDefault(x => x.Name.LocalName == "Action")?.Value;
-                if (!string.IsNullOrEmpty(ebAction))
-                    docTypeId = ebAction; // should be e.g., "busdox-docid-qns::urn:oasis:..."
-
-                string processId = soapXml.Descendants().FirstOrDefault(x => x.Name.LocalName == "Service")?.Value;
-                if (string.IsNullOrEmpty(docTypeId) || string.IsNullOrEmpty(processId))
-                    throw new Exception("Could not extract docTypeId or processId for SMP lookup!");
-
-                // Peppol-compliant SMP lookup
-                var endpointMetadata = await _smkSmpLookup.LookupEndpointMetadata(senderParticipantId, senderScheme, docTypeId, processId);
-
-                //if (!ValidateSignature(soapXml, new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate))))
-                //    throw new Exception("AS4 signature validation failed (does not match SMP certificate)!");
-                //if (!ValidateSignatureWithXmlSec(soapXml, endpointMetadata.Certificate))
-                //    throw new Exception("AS4 signature validation failed (does not match SMP certificate)!");
-
-                log.Info($"=== Incoming AS4 Message Details ===\n" +
-                        $"MessageId: {userMsg.MessageId}\n" +
-                        $"From: {userMsg.FromPartyId}\n" +
-                        $"To: {userMsg.ToPartyId}\n" +
-                        $"Service: {userMsg.Service}\n" +
-                        $"Action: {userMsg.Action}");
-
-                if (string.IsNullOrWhiteSpace(userMsg.MessageId))
-                    throw new Exception("MessageId missing from UserMessage.");
-
-                ValidateMessageId(userMsg.MessageId);
-                _certificateValidator.Validate(new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate)));
-
-                // Payloads: All non-SOAP parts with Content-ID
-                // Parse the incoming HTTP request as a MimeKit MultipartRelated (not just your manual parser!)
-                var requestStream = await Request.Content.ReadAsStreamAsync();
-                var parser = new MimeParser(requestStream, MimeFormat.Entity);
-                var mimeMsg = parser.ParseMessage();
-                var related = mimeMsg.Body as MultipartRelated;
-                if (related == null)
-                    throw new Exception("MIME body is not multipart/related");
-
-                // Now process and persist all referenced payloads
-                var payloadPaths = ProcessAttachments(
-                    related,
-                    soapXml,
-                    userMsg.PayloadHrefs,    // list of cid:...
-                    certPath,
-                    certPwd,
-                    userMsg
-                );
-
-                // 5. Persist metadata
-                var metadata = new As4InboundMetadata
+                if (!validationResult.IsValid)
                 {
-                    MessageId = userMsg.MessageId,
-                    Timestamp = userMsg.Timestamp,
-                    Sender = userMsg.FromPartyId,
-                    Receiver = userMsg.ToPartyId,
-                    DocumentType = userMsg.Service,
-                    //Certificate = senderCert,
-                    PayloadPaths = payloadPaths,
-                    RawSoapXml = soapXml.ToString(),
-                    EnvelopeHeader = userMsg,
-                    CertificateThumbprint = new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate)).Thumbprint,
-                    CertificateBase64 = endpointMetadata.Certificate,
-                };
-                _metadataPersister.Persist(metadata);
+                    var error = validationResult.Errors.First();
+                    return await HandleEbms3Error(correlationId, error.Code, error.Severity, error.Description, validationResult.MessageId, HttpStatusCode.BadRequest);
+                }
 
-                // 6. Generate and sign AS4 receipt
-                var receiptTimestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-                var receiptMessageId = $"{Guid.NewGuid()}@{System.Configuration.ConfigurationManager.AppSettings["PeppolDomain"]}";
-                var receiptMessage = As4MessageBuilder.BuildSignalMessage(
-                    receiptTimestamp,
-                    receiptMessageId,
-                    userMsg.MessageId,
-                    references: references
-                );
-                string messagingId = "phase4-msg-" + Guid.NewGuid().ToString("N");
-                var messaging = As4MessageBuilder.BuildMessaging(receiptMessage, messagingId);
+                if (!_signer.VerifyTimestamp(soapXml))
+                {
+                     return await HandleEbms3Error(correlationId, "EBMS:0103", "SecurityFailure", "Timestamp validation failed.", validationResult.MessageId, HttpStatusCode.Unauthorized);
+                }
 
-                // Load signing certificate
-                var signingCert = new X509Certificate2(certPath, certPwd);
+                var userMsg = SOAPHeaderParser.GetUserMessage(soapXml);
+                var endpointMetadata = await _smkSmpLookup.LookupEndpointMetadata(userMsg.FromPartyId, userMsg.FromPartyIdType, userMsg.Service, userMsg.Action);
+                if (endpointMetadata == null)
+                {
+                     return await HandleEbms3Error(correlationId, "EBMS:0010", "ProcessingModeMismatch", "SMP lookup failed for sender.", userMsg.MessageId, HttpStatusCode.BadRequest);
+                }
 
-                // Build WS-Security header
-                string bstId;
-                var wsseSecurity = As4MessageBuilder.BuildWsseSecurity(signingCert, out bstId);
+                var senderCert = new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate));
+                if (!_certificateManager.ValidateCertificate(senderCert))
+                {
+                    return await HandleEbms3Error(correlationId, "EBMS:0101", "FailedAuthentication", "Sender certificate is not valid.", userMsg.MessageId, HttpStatusCode.Unauthorized);
+                }
+                
+                if (!_signer.VerifyMessageSignature(soapXml, senderCert))
+                {
+                     return await HandleEbms3Error(correlationId, "EBMS:0102", "FailedAuthentication", "Message signature validation failed.", userMsg.MessageId, HttpStatusCode.Unauthorized);
+                }
 
-                // Wrap into SOAP envelope and sign
-                string bodyId = Guid.NewGuid().ToString("N");
-                var receiptSoapDoc = As4MessageBuilder.WrapInSoapEnvelope(messaging, wsseSecurity, bodyId);
-                PeppolAs4Signer.SignEnvelope(
-                    receiptSoapDoc,
-                    certPath,
-                    certPwd,
-                    bstId,
-                    messagingId: messagingId,
-                    bodyId: bodyId
-                );
-
-                // Collect original attachments to echo back
-                var attachments = mimeParts
-                    .Where(p => p != soapPart && !string.IsNullOrEmpty(p.ContentId))
-                    .Select(p => new As4MessageBuilder.Attachment
-                    {
-                        ContentId = p.ContentId,
-                        ContentType = p.ContentType,
-                        Bytes = p.ContentBytes
-                    })
-                    .ToList();
-
-                // 7. Use Phase4 to build the MTOM response
-                HttpResponseMessage as4Response = As4MessageBuilder.CreateMtomResponse(
-                    receiptSoapDoc,
-                    attachments,
-                    HttpStatusCode.OK
-                );
-
-                // 8. Return directly
-                return ResponseMessage(as4Response);
-
+                log.Info($"[{correlationId}] Message {userMsg.MessageId} successfully validated.");
+                return await GenerateAs4Receipt(userMsg.MessageId, correlationId);
             }
             catch (Exception ex)
             {
-                log.Error($"=== AS4 Error ===\nMessage: {ex.Message}\nStack Trace: {ex.StackTrace}");
-                string soapFaultXml = $@"<S12:Envelope xmlns:S12=""http://www.w3.org/2003/05/soap-envelope"">
-<S12:Header/>
-<S12:Body>
-  <S12:Fault>
-    <S12:Code><S12:Value>S12:Receiver</S12:Value></S12:Code>
-    <S12:Reason><S12:Text xml:lang=""en"">{SecurityElement.Escape(ex.Message)}</S12:Text></S12:Reason>
-  </S12:Fault>
-</S12:Body>
-</S12:Envelope>";
-                var errorResponse = new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(soapFaultXml, Encoding.UTF8, "application/soap+xml")
-                };
-                return ResponseMessage(errorResponse);
+                log.Error($"[{correlationId}] Unhandled error processing AS4 message: {ex.Message}", ex);
+                return await HandleEbms3Error(correlationId, "EBMS:0004", "UnexpectedError", "An unexpected error occurred.", null, HttpStatusCode.InternalServerError);
             }
-
         }
 
+        /// <summary>
+        /// Generates AS4 Receipt (SignalMessage) according to AS4 profile
+        /// </summary>
+        private async Task<IHttpActionResult> GenerateAs4Receipt(string refToMessageId, string correlationId)
+        {
+            log.Info($"[{correlationId}] Generating AS4 Receipt for message: {refToMessageId}");
+
+            var timestamp = DateTime.UtcNow.ToString("o");
+            var messageId = $"receipt-{Guid.NewGuid()}@peppol-ap";
+            
+            var receiptMessage = _messageBuilder.BuildSignalMessage(timestamp, messageId, refToMessageId);
+
+            var signingCert = _certificateManager.LoadSigningCertificate();
+            var bstId = "BST-" + Guid.NewGuid().ToString("N");
+            var bodyId = "body-" + Guid.NewGuid().ToString("N");
+            var messagingId = "_1";
+
+            var securityHeader = new XElement(XName.Get("Security", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"),
+                new XAttribute(XNamespace.Get("http://www.w3.org/2003/05/soap-envelope") + "mustUnderstand", "1"),
+                new XElement(XName.Get("Timestamp", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"),
+                    new XElement(XName.Get("Created", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"), DateTime.UtcNow.ToString("o")),
+                    new XElement(XName.Get("Expires", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"), DateTime.UtcNow.AddMinutes(5).ToString("o"))
+                ),
+                new XElement(XName.Get("BinarySecurityToken", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"),
+                    new XAttribute(XNamespace.Get("http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd") + "Id", bstId),
+                    new XAttribute("ValueType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"),
+                    new XAttribute("EncodingType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"),
+                    Convert.ToBase64String(signingCert.GetRawCertData())
+                )
+            );
+
+            var messaging = _messageBuilder.BuildMessaging(receiptMessage, messagingId);
+            var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, securityHeader);
+
+            _signer.SignEnvelope(soapEnvelope, signingCert, bstId, messagingId, bodyId);
+
+            var response = _messageBuilder.CreateMtomResponse(soapEnvelope, null, HttpStatusCode.OK);
+            return ResponseMessage(response);
+        }
+
+        /// <summary>
+        /// Handles ebMS3 compliant error responses
+        /// </summary>
+        private async Task<IHttpActionResult> HandleEbms3Error(string correlationId, string errorCode, 
+            string severity, string description, string refToMessageId, HttpStatusCode httpStatus)
+        {
+            try
+            {
+                log.Error($"[{correlationId}] AS4 Error - Code: {errorCode}, Severity: {severity}, Description: {description}");
+
+                // Generate error message details
+                var errorTimestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                var errorMessageId = $"error-{Guid.NewGuid()}@{_configService.GetPeppolDomain()}";
+
+                // Build ebMS3 Error message
+                var errorMessage = _messageBuilder.BuildErrorMessage(
+                    errorTimestamp,
+                    errorMessageId,
+                    refToMessageId,
+                    errorCode,
+                    severity,
+                    description
+                );
+
+                string messagingId = "phase4-error-" + Guid.NewGuid().ToString("N");
+                var messaging = _messageBuilder.BuildMessaging(errorMessage, messagingId);
+
+                // Sign error message if possible
+                XDocument soapEnvelope;
+                try
+                {
+                    var signingCert = _configService.LoadSigningCertificate();
+                    var wsSecurityHeader = _signer.BuildWsSecurityHeader(
+                        messaging, signingCert, errorTimestamp, messagingId);
+                    soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
+                }
+                catch (Exception ex)
+                {
+                    log.Warn($"[{correlationId}] Could not sign error message: {ex.Message}");
+                    // Return unsigned error message
+                    soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, null);
+                }
+
+                var response = Request.CreateResponse(httpStatus);
+                response.Content = new StringContent(soapEnvelope.ToString(), Encoding.UTF8, "application/soap+xml");
+                
+                // Add error-specific headers
+                response.Headers.Add("X-AS4-Message-Type", "Error");
+                response.Headers.Add("X-AS4-Error-Code", errorCode);
+                response.Headers.Add("X-AS4-Error-Severity", severity);
+                if (!string.IsNullOrEmpty(refToMessageId))
+                    response.Headers.Add("X-AS4-Ref-To-Message-Id", refToMessageId);
+
+                return ResponseMessage(response);
+            }
+            catch (Exception ex)
+            {
+                log.Fatal($"[{correlationId}] Critical error while generating ebMS3 error response: {ex.Message}", ex);
+                
+                // Return basic HTTP error as last resort
+                return InternalServerError(new Exception($"Critical AS4 processing failure: {description}"));
+            }
+        }
+
+        /// <summary>
+        /// Extracts boundary parameter from Content-Type header
+        /// </summary>
+        private string ExtractBoundary(string contentType)
+        {
+            return contentType.Split(';')
+                .Select(p => p.Trim())
+                .FirstOrDefault(p => p.StartsWith("boundary=", StringComparison.OrdinalIgnoreCase))
+                ?.Substring("boundary=".Length)
+                .Trim('"');
+        }
+
+        // ... existing code ...
+
+        /// <summary>
+        /// Sends AS4 message to Peppol participant endpoint
+        /// Implements Peppol AS4 Profile v2.0.3 for outbound messaging
+        /// </summary>
         [HttpPost]
         [Route("send")]
         public async Task<IHttpActionResult> SendAs4Message()
         {
+            var correlationId = Guid.NewGuid().ToString();
+            var startTime = DateTime.UtcNow;
+            string messageId = null;
+
             try
             {
-                // 1. Read invoice XML
-                var invoiceXml = await Request.Content.ReadAsStringAsync();
+                log.Info($"[{correlationId}] === Outbound AS4 Message Send Started ===");
 
-                // 2. Extract PEPPOL header info (your implementation)
-                var peppolHeader = ExtractPeppolHeaderInfo(invoiceXml);
+                // Step 1: Read and validate invoice XML
+                var invoiceXml = await Request.Content.ReadAsStringAsync();
+                if (string.IsNullOrWhiteSpace(invoiceXml))
+                {
+                    log.Error($"[{correlationId}] Empty or null invoice XML received");
+                    return BadRequest("Invoice XML content is required");
+                }
+
+                log.Info($"[{correlationId}] Invoice XML received - Length: {invoiceXml.Length} characters");
+
+                // Step 2: Extract PEPPOL header information
+                PeppolHeaderInfo peppolHeader;
+                try
+                {
+                    peppolHeader = ExtractPeppolHeaderInfo(invoiceXml);
+                    log.Info($"[{correlationId}] Peppol header extracted - Sender: {peppolHeader.SenderId}, Receiver: {peppolHeader.ReceiverId}");
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] Failed to extract Peppol header: {ex.Message}", ex);
+                    return BadRequest($"Invalid Peppol document structure: {ex.Message}");
+                }
+
                 var recipientId = peppolHeader.ReceiverId;
                 var senderId = peppolHeader.SenderId;
                 var receiverId = peppolHeader.ReceiverId;
@@ -276,90 +314,148 @@ namespace PeppolSG.API.Controllers
                 var instanceId = peppolHeader.InstanceId;
                 var conversationId = $"Conv-{Guid.NewGuid()}";
 
-                // 3. Lookup recipient endpoint and cert via SMP
-                var endpointMeta = await _smkSmpLookup.LookupEndpointMetadata(
-                    receiverId, receiverScheme, docTypeId, processId
-                );
-                var recipientEndpoint = endpointMeta.EndpointUrl;
+                // Step 3: Perform SMP lookup for recipient endpoint and certificate
+                log.Info($"[{correlationId}] Performing SMP lookup for recipient {receiverId}");
+                Models.SmpEndpoint endpointMeta;
+                try
+                {
+                    endpointMeta = await _smkSmpLookup.LookupEndpointMetadata(
+                        receiverId, receiverScheme, docTypeId, processId);
+                    log.Info($"[{correlationId}] SMP lookup successful - Endpoint: {endpointMeta.EndpointReference.Address}");
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] SMP lookup failed: {ex.Message}", ex);
+                    return BadRequest($"SMP lookup failed for recipient {receiverId}: {ex.Message}");
+                }
+
+                var recipientEndpoint = endpointMeta.EndpointReference.Address;
                 var recipientCert = new X509Certificate2(Convert.FromBase64String(endpointMeta.Certificate));
 
-                // 4. Build AS4 header values
-                var domain = System.Configuration.ConfigurationManager.AppSettings["PeppolDomain"];
-                var messageId = instanceId + "@" + domain;
+                // Step 4: Generate message identifiers using configuration
+                var domain = _configService.GetPeppolDomain();
+                messageId = $"{instanceId}@{domain}";
                 var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
 
-                // 5. Load sender cert
-                var senderCert = new X509Certificate2(certPath, certPwd);
+                log.Info($"[{correlationId}] Generated MessageId: {messageId}");
+
+                // Step 5: Load sender certificate from configuration
+                X509Certificate2 senderCert;
+                try
+                {
+                    senderCert = _configService.LoadSigningCertificate();
+                    log.Info($"[{correlationId}] Sender certificate loaded successfully");
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] Failed to load sender certificate: {ex.Message}", ex);
+                    return InternalServerError(new Exception($"Certificate loading failed: {ex.Message}"));
+                }
+
                 var senderPartyId = GetCertificateCommonName(senderCert);
                 var receiverPartyId = GetCertificateCommonName(recipientCert);
 
-                // 6. Compress & AES-GCM encrypt payload
-                var plainBytes = Encoding.UTF8.GetBytes(invoiceXml);
-                var gzipped = CompressGzip(plainBytes);
-                // Generate AES key and IV (12 bytes for GCM)
-                var aesKey = new byte[16];
-                var aesIv = new byte[12]; // 12 bytes for GCM
-                byte[] gcmTag;
-                using (var rng = RandomNumberGenerator.Create())
+                // Step 6: Compress and encrypt payload using AES-GCM
+                log.Info($"[{correlationId}] Starting payload encryption");
+                byte[] encryptedAttachment;
+                string encKeyB64;
+                try
                 {
-                    rng.GetBytes(aesKey);
-                    rng.GetBytes(aesIv);
+                    var plainBytes = Encoding.UTF8.GetBytes(invoiceXml);
+                    var gzipped = CompressGzip(plainBytes);
+                    
+                    // Generate AES key and IV (12 bytes for GCM as per eDelivery AS4 Profile)
+                    var aesKey = new byte[16]; // 128-bit AES key
+                    var aesIv = new byte[12];  // 96-bit IV for GCM
+                    byte[] gcmTag;
+                    
+                    using (var rng = RandomNumberGenerator.Create())
+                    {
+                        rng.GetBytes(aesKey);
+                        rng.GetBytes(aesIv);
+                    }
+                    
+                    // Encrypt the gzipped payload with AES-GCM
+                    var cipher = CryptoUtil.AesGcmEncrypt(aesKey, aesIv, gzipped, out gcmTag);
+
+                    // Concatenate IV + cipher + tag (as per Peppol conventions)
+                    encryptedAttachment = new byte[aesIv.Length + cipher.Length + gcmTag.Length];
+                    Buffer.BlockCopy(aesIv, 0, encryptedAttachment, 0, aesIv.Length);
+                    Buffer.BlockCopy(cipher, 0, encryptedAttachment, aesIv.Length, cipher.Length);
+                    Buffer.BlockCopy(gcmTag, 0, encryptedAttachment, aesIv.Length + cipher.Length, gcmTag.Length);
+
+                    // Protect AES key with RSA-OAEP/SHA-256
+                    var encryptedAesKey = RsaOaepEncrypt_MGF1_SHA256(aesKey, recipientCert);
+                    encKeyB64 = Convert.ToBase64String(encryptedAesKey);
+                    
+                    log.Info($"[{correlationId}] Payload encryption completed - Encrypted size: {encryptedAttachment.Length} bytes");
                 }
-                // encrypt the gzipped payload with AES-GCM
-                var cipher = CryptoUtil.AesGcmEncrypt(aesKey, aesIv, gzipped, out gcmTag);
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] Payload encryption failed: {ex.Message}", ex);
+                    return InternalServerError(new Exception($"Payload encryption failed: {ex.Message}"));
+                }
 
-                // Attachment is IV + cipher + tag (concatenated, as per Peppol conventions)
-                var encryptedAttachment = new byte[aesIv.Length + cipher.Length + gcmTag.Length];
-                Buffer.BlockCopy(aesIv, 0, encryptedAttachment, 0, aesIv.Length);
-                Buffer.BlockCopy(cipher, 0, encryptedAttachment, aesIv.Length, cipher.Length);
-                Buffer.BlockCopy(gcmTag, 0, encryptedAttachment, aesIv.Length + cipher.Length, gcmTag.Length);
-
-                // 7. Protect AES key with RSA-OAEP/SHA-256
-                var encryptedAesKey = RsaOaepEncrypt_MGF1_SHA256(aesKey, recipientCert);
-                var encKeyB64 = Convert.ToBase64String(encryptedAesKey);
-
-                // 8. IDs and CIDs
+                // Step 7: Generate unique identifiers for encryption elements
                 var encryptedKeyId = "EK-" + Guid.NewGuid().ToString("N");
                 var encryptedDataId = "ED-" + Guid.NewGuid().ToString("N");
                 var attachmentCid = "phase4-att-" + Guid.NewGuid().ToString("N") + "@cid";
                 var partHref = "cid:" + attachmentCid;
 
-                // 9. Build UserMessage/Messaging (Phase4 helper)
-                var userMsg = As4MessageBuilder.BuildUserMessage(
-                    messageId, timestamp, "Conv-" + Guid.NewGuid().ToString("N"),
+                // Step 8: Build UserMessage according to Peppol AS4 Profile
+                log.Info($"[{correlationId}] Building AS4 UserMessage");
+                var userMsg = _messageBuilder.BuildUserMessage(
+                    messageId, timestamp, conversationId,
                     senderPartyId, receiverPartyId,
                     docTypeId, processId, partHref,
                     receiverId, senderId, true
                 );
                 var messagingId = "phase4-msg-" + Guid.NewGuid().ToString("N");
-                var messaging = As4MessageBuilder.BuildMessaging(userMsg, messagingId);
+                var messaging = _messageBuilder.BuildMessaging(userMsg, messagingId);
 
-                // 10. Build WS-Security header
-                string recipientBstId = Guid.NewGuid().ToString("N");
-                var recipientBst = As4MessageBuilder.BuildBinarySecurityToken(recipientCert, recipientBstId);
-                string senderBstId = "X509-" + Guid.NewGuid().ToString("N");
-                var senderBst = As4MessageBuilder.BuildBinarySecurityToken(senderCert, senderBstId);
+                // Step 9: Build WS-Security header with encryption elements
+                log.Info($"[{correlationId}] Building WS-Security header");
+                string recipientBstId = "BST-Recipient-" + Guid.NewGuid().ToString("N");
+                var recipientBst = _messageBuilder.BuildBinarySecurityToken(recipientCert, recipientBstId);
+                string senderBstId = "BST-Sender-" + Guid.NewGuid().ToString("N");
+                var senderBst = _messageBuilder.BuildBinarySecurityToken(senderCert, senderBstId);
 
-                var encryptedKeyEl = As4MessageBuilder.BuildEncryptedKey(encryptedKeyId, recipientBstId, encKeyB64, encryptedDataId);
-                var encryptedDataEl = As4MessageBuilder.BuildEncryptedData(encryptedDataId, encryptedKeyId, attachmentCid);
+                var encryptedKeyEl = _messageBuilder.BuildEncryptedKey(encryptedKeyId, recipientBstId, encKeyB64, encryptedDataId);
+                var encryptedDataEl = _messageBuilder.BuildEncryptedData(encryptedDataId, encryptedKeyId, attachmentCid);
 
-                var wsseSec = As4MessageBuilder.BuildSecurityHeader(
+                var wsseSec = _messageBuilder.BuildSecurityHeader(
                     recipientBst, encryptedKeyEl, encryptedDataEl, senderBst
                 );
 
-                // 11. Assemble and sign SOAP envelope
-                var bodyId = "id-" + Guid.NewGuid().ToString("N");
-                var soapDoc = As4MessageBuilder.WrapInSoapEnvelope(wsseSec, messaging, bodyId);
-                PeppolAs4Signer.SignEnvelope(
-                    soapDoc, certPath, certPwd,
-                    senderBstId, messagingId, bodyId,
-                    partHref, encryptedAttachment
-                );
-
-                // 12. Build MIME multipart/related with CreateMtomResponse
-                var attachments = new List<As4MessageBuilder.Attachment>
+                // Step 10: Assemble and sign SOAP envelope
+                log.Info($"[{correlationId}] Assembling and signing SOAP envelope");
+                XDocument soapDoc;
+                try
                 {
-                    new As4MessageBuilder.Attachment
+                    var bodyId = "id-" + Guid.NewGuid().ToString("N");
+                    soapDoc = _messageBuilder.WrapInSoapEnvelope(wsseSec, messaging, bodyId);
+                    
+                    _signer.SignEnvelope(
+                        soapDoc, 
+                        _configService.GetSigningCertificatePath(), 
+                        _configService.GetSigningCertificatePassword(),
+                        senderBstId, messagingId, bodyId,
+                        partHref, encryptedAttachment
+                    );
+                    
+                    log.Info($"[{correlationId}] SOAP envelope signed successfully");
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] SOAP envelope signing failed: {ex.Message}", ex);
+                    return InternalServerError(new Exception($"Message signing failed: {ex.Message}"));
+                }
+
+                // Step 11: Build MIME multipart/related message
+                log.Info($"[{correlationId}] Building MIME multipart message");
+                var attachments = new List<_messageBuilder.Attachment>
+                {
+                    new _messageBuilder.Attachment
                     {
                         ContentId = attachmentCid,
                         ContentType = "application/octet-stream",
@@ -367,47 +463,84 @@ namespace PeppolSG.API.Controllers
                     }
                 };
 
-                var mtomResponse = As4MessageBuilder.CreateMtomResponse(
+                var mtomResponse = _messageBuilder.CreateMtomResponse(
                     soapDoc,
                     attachments,
-                    HttpStatusCode.OK // not used for sending, but required
+                    HttpStatusCode.OK
                 );
 
-                // 13. Send HTTP request
+                // Step 12: Send AS4 message to recipient endpoint
+                log.Info($"[{correlationId}] Sending AS4 message to endpoint: {recipientEndpoint}");
                 using (var http = new HttpClient())
                 {
+                    // Configure HttpClient timeout
+                    http.Timeout = TimeSpan.FromMinutes(5);
+
                     var outReq = new HttpRequestMessage(HttpMethod.Post, recipientEndpoint)
                     {
                         Content = mtomResponse.Content
                     };
-                    outReq.Headers.Add("SOAPAction", ""); // Required by Peppol
-                                                          // (Optional) If you want to log or inspect the outgoing MIME:
-                                                          // var debugRaw = await mtomResponse.Content.ReadAsStringAsync();
-                    outReq.Headers.Add("X-Token", "NjIh9tIx3Rgzme19mGIy");
+
+                    // Add required AS4 headers
+                    outReq.Headers.Add("SOAPAction", ""); // Required by AS4 specification
                     outReq.Headers.TryAddWithoutValidation("MIME-Version", "1.0");
-                    // Log headers
+                    
+                    // Add optional debugging headers (remove in production)
+                    if (_configService.IsDebugMode())
+                    {
+                        outReq.Headers.Add("X-Debug-Token", "PeppolSG-AS4");
+                        outReq.Headers.Add("X-Debug-CorrelationId", correlationId);
+                    }
+
+                    // Log request headers for debugging
                     foreach (var h in outReq.Headers)
-                        log.Info($"{h.Key}: {string.Join(", ", h.Value)}");
+                        log.Debug($"[{correlationId}] Request header: {h.Key}: {string.Join(", ", h.Value)}");
 
-                    // Log MIME body
-                    var debugRaw = await mtomResponse.Content.ReadAsStringAsync();
-                    log.Info("--- AS4 Outgoing MIME Body ---\n" + debugRaw);
+                    // Optional: Log MIME body for debugging (be careful with sensitive data)
+                    if (_configService.IsDebugMode())
+                    {
+                        var debugRaw = await mtomResponse.Content.ReadAsStringAsync();
+                        log.Debug($"[{correlationId}] Outgoing MIME body length: {debugRaw.Length} characters");
+                    }
 
-                    var resp = await http.SendAsync(outReq);
+                    HttpResponseMessage resp;
+                    try
+                    {
+                        resp = await http.SendAsync(outReq);
+                        log.Info($"[{correlationId}] HTTP response received - Status: {resp.StatusCode}");
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        log.Error($"[{correlationId}] HTTP request failed: {ex.Message}", ex);
+                        return InternalServerError(new Exception($"Failed to send AS4 message to {recipientEndpoint}: {ex.Message}"));
+                    }
+                    catch (TaskCanceledException ex)
+                    {
+                        log.Error($"[{correlationId}] HTTP request timeout: {ex.Message}", ex);
+                        return InternalServerError(new Exception($"Timeout sending AS4 message to {recipientEndpoint}"));
+                    }
+
+                    // Log response details
+                    var responseBody = await resp.Content.ReadAsStringAsync();
+                    log.Info($"[{correlationId}] Response body length: {responseBody.Length} characters");
+                    
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        log.Info($"[{correlationId}] === AS4 Message Send Completed Successfully === " +
+                                $"Duration: {(DateTime.UtcNow - startTime).TotalMilliseconds}ms");
+                    }
+                    else
+                    {
+                        log.Error($"[{correlationId}] AS4 send failed with HTTP {resp.StatusCode}: {responseBody}");
+                    }
+
                     return ResponseMessage(resp);
                 }
             }
             catch (Exception ex)
             {
-                log.Error("AS4 send error: " + ex.Message, ex);
-                return Content(HttpStatusCode.InternalServerError, new
-                {
-                    Message = "AS4 send error",
-                    ExceptionMessage = ex.Message,
-                    ExceptionType = ex.GetType().FullName,
-                    StackTrace = ex.StackTrace,
-                    InnerException = ex.InnerException?.ToString()
-                });
+                log.Error($"[{correlationId}] Unhandled exception in AS4 send: {ex.Message}", ex);
+                return InternalServerError(new Exception($"AS4 send operation failed: {ex.Message}"));
             }
         }
 
@@ -860,6 +993,9 @@ namespace PeppolSG.API.Controllers
         public object EnvelopeHeader { get; set; }
         public string CertificateThumbprint { get; set; }
         public string CertificateBase64 { get; set; }
+        public string CorrelationId { get; set; }
+        public DateTime ProcessingStartTime { get; set; }
+        public DateTime ProcessingEndTime { get; set; }
     }
 
     public class PeppolHeaderInfo

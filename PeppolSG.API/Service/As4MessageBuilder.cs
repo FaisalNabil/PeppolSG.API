@@ -9,30 +9,51 @@ using System.Text;
 using System.Web;
 using System.Xml.Linq;
 using System.Security.Cryptography.Xml;
+using PeppolSG.API.Service.Interfaces;
 
 namespace PeppolSG.API.Service
 {
-    public static class As4MessageBuilder
+    /// <summary>
+    /// AS4 Message Builder for Peppol Access Point
+    /// Implements eDelivery AS4 Profile v1.1.0 and Peppol AS4 Profile v2.0.3
+    /// </summary>
+    public class As4MessageBuilder : IAs4MessageBuilder
     {
+        private readonly IPeppolConfigurationService _config;
+
+        public As4MessageBuilder(IPeppolConfigurationService config)
+        {
+            _config = config;
+        }
+
         // PEPPOL / ebMS namespaces
         private static readonly XNamespace EB = "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/";
         private static readonly XNamespace EBBP = "http://docs.oasis-open.org/ebxml-bp/ebbp-signals-2.0";
-        // WS-Security / XML Signature / XML Encryption
+        
+        // WS-Security / XML Signature / XML Encryption (WS-Security 1.1.1)
         private static readonly XNamespace WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
         private static readonly XNamespace WSSE11 = "http://docs.oasis-open.org/wss/oasis-wss-wssecurity-secext-1.1.xsd";
         private static readonly XNamespace WSU = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
         private static readonly XNamespace DS = SignedXml.XmlDsigNamespaceUrl;
         private static readonly XNamespace XENC = "http://www.w3.org/2001/04/xmlenc#";
         private static readonly XNamespace XENC11 = "http://www.w3.org/2009/xmlenc11#";
+        
         // SOAP / XLink
         private static readonly XNamespace S12 = "http://www.w3.org/2003/05/soap-envelope";
         private static readonly XNamespace XLINK = "http://www.w3.org/1999/xlink";
         private static readonly XNamespace NS2 = "http://schemas.xmlsoap.org/soap/envelope/";
         private static readonly XNamespace NS3 = "http://www.w3.org/2003/05/soap-envelope";
 
+        // Standard Business Document Header
+        private static readonly XNamespace SBDH = "http://www.unece.org/cefact/namespaces/StandardBusinessDocumentHeader";
+
+        // ebMS Role constant
         const string EbmsRole = "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/role/ebms";
 
-        public static XElement BuildUserMessage(
+        /// <summary>
+        /// Builds UserMessage according to Peppol AS4 Profile v2.0.3
+        /// </summary>
+        public XElement BuildUserMessage(
             string messageId,
             string timestamp,
             string conversationId,
@@ -45,11 +66,19 @@ namespace PeppolSG.API.Service
             string originalSenderId,
             bool compressed)
         {
+            // Validate required parameters
+            if (string.IsNullOrEmpty(messageId)) throw new ArgumentNullException(nameof(messageId));
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
+            if (string.IsNullOrEmpty(conversationId)) throw new ArgumentNullException(nameof(conversationId));
+
             var msg = new XElement(EB + "UserMessage",
+                // MessageInfo - Required by AS4 Profile
                 new XElement(EB + "MessageInfo",
                     new XElement(EB + "Timestamp", timestamp),
                     new XElement(EB + "MessageId", messageId)
                 ),
+                
+                // PartyInfo - Peppol AP identifiers
                 new XElement(EB + "PartyInfo",
                     new XElement(EB + "From",
                         new XElement(EB + "PartyId",
@@ -68,6 +97,8 @@ namespace PeppolSG.API.Service
                             "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/responder")
                     )
                 ),
+                
+                // CollaborationInfo - Peppol specific values
                 new XElement(EB + "CollaborationInfo",
                     new XElement(EB + "AgreementRef",
                         "urn:fdc:peppol.eu:2017:agreements:tia:ap_provider"),
@@ -78,6 +109,8 @@ namespace PeppolSG.API.Service
                     new XElement(EB + "Action", docTypeId),
                     new XElement(EB + "ConversationId", conversationId)
                 ),
+                
+                // MessageProperties - Peppol Four Corner Model
                 new XElement(EB + "MessageProperties",
                     new XElement(EB + "Property",
                         new XAttribute("name", "originalSender"),
@@ -92,24 +125,31 @@ namespace PeppolSG.API.Service
                 )
             );
 
+            // PayloadInfo - Only if attachment present
             if (!string.IsNullOrWhiteSpace(partHref))
             {
-                var props = new List<object>
+                var partProperties = new List<XElement>
                 {
                     new XElement(EB + "Property",
                         new XAttribute("name", "MimeType"),
-                        "application/xml")
+                        "application/xml"),
+                    new XElement(EB + "Property",
+                        new XAttribute("name", "CharacterSet"),
+                        "UTF-8")
                 };
+
                 if (compressed)
-                    props.Add(new XElement(EB + "Property",
+                {
+                    partProperties.Add(new XElement(EB + "Property",
                         new XAttribute("name", "CompressionType"),
                         "application/gzip"));
+                }
 
                 msg.Add(
                     new XElement(EB + "PayloadInfo",
                         new XElement(EB + "PartInfo",
                             new XAttribute("href", partHref),
-                            new XElement(EB + "PartProperties", props)
+                            new XElement(EB + "PartProperties", partProperties)
                         )
                     )
                 );
@@ -118,72 +158,272 @@ namespace PeppolSG.API.Service
             return msg;
         }
 
+        /// <summary>
+        /// Builds SignalMessage (Receipt) according to AS4 Profile
+        /// </summary>
         public static XElement BuildSignalMessage(
             string timestamp,
             string messageId,
             string refToMessageId,
             IEnumerable<XElement> references = null)
         {
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
+            if (string.IsNullOrEmpty(messageId)) throw new ArgumentNullException(nameof(messageId));
+            if (string.IsNullOrEmpty(refToMessageId)) throw new ArgumentNullException(nameof(refToMessageId));
+
             var info = new XElement(EB + "MessageInfo",
                 new XElement(EB + "Timestamp", timestamp),
                 new XElement(EB + "MessageId", messageId),
                 new XElement(EB + "RefToMessageId", refToMessageId)
             );
 
-            XElement rr = null;
+            XElement receipt;
             if (references?.Any() == true)
             {
-                rr = new XElement(EBBP + "NonRepudiationInformation",
+                var nrInfo = new XElement(EBBP + "NonRepudiationInformation",
                     references.Select(r =>
                         new XElement(EBBP + "MessagePartNRInformation", r)
                     )
                 );
+                receipt = new XElement(EB + "Receipt", nrInfo);
             }
-
-            var receipt = rr != null
-                ? new XElement(EB + "Receipt", rr)
-                : new XElement(EB + "Receipt");
+            else
+            {
+                receipt = new XElement(EB + "Receipt");
+            }
 
             return new XElement(EB + "SignalMessage", info, receipt);
         }
 
+        /// <summary>
+        /// Builds ebMS3 Error Message for AS4 failures
+        /// </summary>
+        public static XElement BuildErrorMessage(
+            string timestamp,
+            string messageId,
+            string refToMessageId,
+            string errorCode,
+            string severity,
+            string description,
+            string shortDescription = null,
+            string origin = "ebMS",
+            string category = "Content")
+        {
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
+            if (string.IsNullOrEmpty(messageId)) throw new ArgumentNullException(nameof(messageId));
+            if (string.IsNullOrEmpty(errorCode)) throw new ArgumentNullException(nameof(errorCode));
+
+            var info = new XElement(EB + "MessageInfo",
+                new XElement(EB + "Timestamp", timestamp),
+                new XElement(EB + "MessageId", messageId)
+            );
+
+            if (!string.IsNullOrEmpty(refToMessageId))
+            {
+                info.Add(new XElement(EB + "RefToMessageId", refToMessageId));
+            }
+
+            var error = new XElement(EB + "Error",
+                new XAttribute("origin", origin),
+                new XAttribute("category", category),
+                new XAttribute("errorCode", errorCode),
+                new XAttribute("severity", severity)
+            );
+
+            if (!string.IsNullOrEmpty(shortDescription))
+            {
+                error.Add(new XAttribute("shortDescription", shortDescription));
+            }
+
+            if (!string.IsNullOrEmpty(description))
+            {
+                error.Add(new XElement(EB + "Description",
+                    new XAttribute(XNamespace.Xml + "lang", "en"),
+                    description));
+            }
+
+            return new XElement(EB + "SignalMessage", info, error);
+        }
+
+        /// <summary>
+        /// Builds Messaging element with proper namespace declarations
+        /// </summary>
         public static XElement BuildMessaging(XElement messageOrSignal, string messagingId = null)
         {
-            var el = new XElement(EB + "Messaging",
-                new XAttribute(XNamespace.Xmlns + "ds", DS.NamespaceName),
+            var messaging = new XElement(EB + "Messaging",
+                // Required namespace declarations for eDelivery AS4 Profile
                 new XAttribute(XNamespace.Xmlns + "eb", EB.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "ds", DS.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "ebbp", EBBP.NamespaceName),
-                new XAttribute(XNamespace.Xmlns + "ns2", NS2.NamespaceName),
-                new XAttribute(XNamespace.Xmlns + "ns3", NS3.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "xlink", XLINK.NamespaceName)
             );
 
             if (!string.IsNullOrWhiteSpace(messagingId))
-                el.Add(new XAttribute(WSU + "Id", messagingId));
+                messaging.Add(new XAttribute(WSU + "Id", messagingId));
 
-            el.Add(messageOrSignal);
-            return el;
+            messaging.Add(messageOrSignal);
+            return messaging;
         }
 
+        /// <summary>
+        /// Builds complete SOAP envelope with WS-Security header
+        /// Implementation for eDelivery AS4 Profile v1.1.0
+        /// </summary>
+        public static XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader)
+        {
+            if (messaging == null) throw new ArgumentNullException(nameof(messaging));
+
+            var headerElements = new List<XElement> { messaging };
+            if (wsSecurityHeader != null)
+            {
+                headerElements.Insert(0, wsSecurityHeader); // WS-Security should come first
+            }
+
+            var envelope = new XDocument(
+                new XDeclaration("1.0", "UTF-8", null),
+                new XElement(S12 + "Envelope",
+                    new XAttribute(XNamespace.Xmlns + "S12", S12.NamespaceName),
+                    new XElement(S12 + "Header", headerElements),
+                    new XElement(S12 + "Body") // Empty body for AS4 profile
+                )
+            );
+
+            return envelope;
+        }
+
+        /// <summary>
+        /// Legacy method for backward compatibility
+        /// </summary>
         public static XDocument WrapInSoapEnvelope(XElement securityHeader, XElement messaging, string bodyId)
         {
-            var hdr = new List<object>();
-            if (securityHeader != null) hdr.Add(securityHeader);
-            hdr.Add(messaging);
+            var headerElements = new List<object>();
+            if (securityHeader != null) headerElements.Add(securityHeader);
+            headerElements.Add(messaging);
 
             var body = new XElement(S12 + "Body");
             if (!string.IsNullOrWhiteSpace(bodyId))
+            {
                 body.Add(
                     new XAttribute(XNamespace.Xmlns + "wsu", WSU),
-                    new XAttribute(WSU + "Id", bodyId));
+                    new XAttribute(WSU + "Id", bodyId)
+                );
+            }
 
             return new XDocument(
                 new XDeclaration("1.0", "UTF-8", null),
                 new XElement(S12 + "Envelope",
                     new XAttribute(XNamespace.Xmlns + "S12", S12.NamespaceName),
-                    new XElement(S12 + "Header", hdr),
+                    new XElement(S12 + "Header", headerElements),
                     body
+                )
+            );
+        }
+
+        /// <summary>
+        /// Builds WS-Security header with timestamp token for WS-Security 1.1.1 compliance
+        /// Used by the AS4 controller for proper message signing
+        /// </summary>
+        public static XElement BuildWsSecurityHeader(
+            XElement messaging,
+            X509Certificate2 signingCert,
+            string timestamp,
+            string messagingId)
+        {
+            if (messaging == null) throw new ArgumentNullException(nameof(messaging));
+            if (signingCert == null) throw new ArgumentNullException(nameof(signingCert));
+            if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
+
+            // Generate unique IDs
+            var timestampId = "TS-" + Guid.NewGuid().ToString("N");
+            var bstId = "BST-" + Guid.NewGuid().ToString("N");
+
+            // Build Timestamp token (required by WS-Security 1.1.1)
+            var timestampElement = new XElement(WSU + "Timestamp",
+                new XAttribute(WSU + "Id", timestampId),
+                new XElement(WSU + "Created", timestamp),
+                new XElement(WSU + "Expires", 
+                    DateTime.Parse(timestamp).AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
+            );
+
+            // Build Binary Security Token
+            var binarySecurityToken = new XElement(WSSE + "BinarySecurityToken",
+                new XAttribute("EncodingType",
+                    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"),
+                new XAttribute("ValueType",
+                    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"),
+                new XAttribute(WSU + "Id", bstId),
+                Convert.ToBase64String(signingCert.RawData)
+            );
+
+            // Build WS-Security header
+            var wsSecurityHeader = new XElement(WSSE + "Security",
+                new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
+                new XAttribute(S12 + "mustUnderstand", "1"),
+                new XAttribute(S12 + "role", EbmsRole),
+                timestampElement,
+                binarySecurityToken
+                // Signature will be added later by the signing process
+            );
+
+            return wsSecurityHeader;
+        }
+
+        /// <summary>
+        /// Builds Standard Business Document Header (SBDH) for Peppol documents
+        /// Implements SBDH v1.3 for Peppol Business Interoperability Specifications
+        /// </summary>
+        public static XElement BuildSbdh(
+            string senderId,
+            string receiverId,
+            string docTypeId,
+            string processId,
+            string instanceId,
+            string creationDateTime)
+        {
+            if (string.IsNullOrEmpty(senderId)) throw new ArgumentNullException(nameof(senderId));
+            if (string.IsNullOrEmpty(receiverId)) throw new ArgumentNullException(nameof(receiverId));
+            if (string.IsNullOrEmpty(docTypeId)) throw new ArgumentNullException(nameof(docTypeId));
+
+            return new XElement(SBDH + "StandardBusinessDocumentHeader",
+                new XAttribute(XNamespace.Xmlns + "sbdh", SBDH.NamespaceName),
+                
+                // Header Version
+                new XElement(SBDH + "HeaderVersion", "1.0"),
+                
+                // Sender information
+                new XElement(SBDH + "Sender",
+                    new XElement(SBDH + "Identifier",
+                        new XAttribute("Authority", "iso6523-actorid-upis"),
+                        senderId)),
+                
+                // Receiver information
+                new XElement(SBDH + "Receiver",
+                    new XElement(SBDH + "Identifier",
+                        new XAttribute("Authority", "iso6523-actorid-upis"),
+                        receiverId)),
+                
+                // Document identification
+                new XElement(SBDH + "DocumentIdentification",
+                    new XElement(SBDH + "Standard", "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"),
+                    new XElement(SBDH + "TypeVersion", "2.1"),
+                    new XElement(SBDH + "InstanceIdentifier", instanceId ?? Guid.NewGuid().ToString()),
+                    new XElement(SBDH + "Type", "Invoice"),
+                    new XElement(SBDH + "CreationDateAndTime", 
+                        creationDateTime ?? DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))),
+                
+                // Business scope with Peppol identifiers
+                new XElement(SBDH + "BusinessScope",
+                    new XElement(SBDH + "Scope",
+                        new XElement(SBDH + "Type", "DOCUMENTID"),
+                        new XElement(SBDH + "Identifier", "busdox-docid-qns"),
+                        new XElement(SBDH + "InstanceIdentifier", docTypeId)),
+                    new XElement(SBDH + "Scope",
+                        new XElement(SBDH + "Type", "PROCESSID"),
+                        new XElement(SBDH + "Identifier", "cenbii-procid-ubl"),
+                        new XElement(SBDH + "InstanceIdentifier", processId))
                 )
             );
         }
@@ -324,65 +564,60 @@ namespace PeppolSG.API.Service
             );
         }
 
-        public static XElement BuildErrorMessaging(string messageId, Exception ex, string refToMsgId = null)
-        {
-            var msgInfo = new XElement(EB + "MessageInfo",
-                    new XElement(EB + "Timestamp", DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")),
-                    new XElement(EB + "MessageId", messageId));
-            if (!string.IsNullOrEmpty(refToMsgId))
-                msgInfo.Add(new XElement(EB + "RefToMessageId", refToMsgId));
-
-            var error = new XElement(EB + "Error",
-                new XAttribute("origin", "ebMS"),
-                new XAttribute("category", "Content"),
-                new XAttribute("errorCode", "EBMS:0004"),
-                new XAttribute("severity", "failure"),
-                new XAttribute("shortDescription", "Processing failure"),
-                new XElement(EB + "Description",
-                    new XAttribute(XNamespace.Xml + "lang", "en"),
-                    ex.ToString()));
-
-            return new XElement(EB + "Messaging",
-                new XAttribute(XNamespace.Xmlns + "eb", EB.NamespaceName),
-                new XElement(EB + "SignalMessage", msgInfo, error));
-        }
-
+        /// <summary>
+        /// Enhanced multipart message creation with proper AS4 structure
+        /// Implements eDelivery AS4 Profile v1.1.0 multipart/related requirements
+        /// </summary>
         public static HttpResponseMessage CreateMtomResponse(
-    XDocument soapEnvelope,
-    IList<Attachment> attachments,
-    HttpStatusCode statusCode)
+            XDocument soapEnvelope,
+            IList<Attachment> attachments,
+            HttpStatusCode statusCode)
         {
-            // 1) Create a "multipart/related" container with a random boundary
+            if (soapEnvelope == null) throw new ArgumentNullException(nameof(soapEnvelope));
+
+            // Generate boundary for multipart/related
             var boundary = "----=_Part_" + Guid.NewGuid().ToString("N");
             var multipart = new MultipartContent("related", boundary);
 
-            // 2) Add the SOAP part
-            var xml = soapEnvelope.Declaration + soapEnvelope.ToString(SaveOptions.DisableFormatting);
-            var soapContent = new StringContent(xml, Encoding.UTF8, "application/soap+xml");
-            // indicate the root part
-            //soapContent.Headers.ContentType.Parameters.Add(new NameValueHeaderValue("type", "\"application/soap+xml\""));
-            soapContent.Headers.Add("Content-Transfer-Encoding", "binary");
-            soapContent.Headers.Add("Content-ID", "<root.message>");
+            // 1. Add SOAP part as root part
+            var soapXml = soapEnvelope.Declaration?.ToString() + soapEnvelope.ToString(SaveOptions.DisableFormatting);
+            var soapContent = new StringContent(soapXml, Encoding.UTF8, "application/soap+xml");
+            
+            // Set proper headers for SOAP part according to eDelivery AS4 Profile
+            soapContent.Headers.ContentType.CharSet = "UTF-8";
+            soapContent.Headers.Add("Content-Transfer-Encoding", "8bit");
+            soapContent.Headers.Add("Content-ID", "<root.message@cxf.apache.org>");
+            
             multipart.Add(soapContent);
 
-            // 3) Add each binary attachment
-            foreach (var att in attachments)
+            // 2. Add binary attachments
+            if (attachments != null)
             {
-                var bin = new ByteArrayContent(att.Bytes);
-                bin.Headers.ContentType = MediaTypeHeaderValue.Parse(att.ContentType);
-                bin.Headers.Add("Content-Transfer-Encoding", "binary");
-                bin.Headers.Add("Content-ID", $"<{att.ContentId}>");
-                multipart.Add(bin);
+                foreach (var attachment in attachments)
+                {
+                    var binaryContent = new ByteArrayContent(attachment.Bytes);
+                    binaryContent.Headers.ContentType = MediaTypeHeaderValue.Parse(attachment.ContentType);
+                    binaryContent.Headers.Add("Content-Transfer-Encoding", "binary");
+                    binaryContent.Headers.Add("Content-ID", $"<{attachment.ContentId}>");
+                    
+                    multipart.Add(binaryContent);
+                }
             }
 
-            // 4) Wrap into HttpResponseMessage
-            var resp = new HttpResponseMessage(statusCode)
+            // 3. Create HTTP response
+            var response = new HttpResponseMessage(statusCode)
             {
                 Content = multipart
             };
-            // set the overall Content-Type header
-            resp.Content.Headers.ContentType = MediaTypeHeaderValue.Parse($"multipart/related; boundary=\"{boundary}\"; type=\"application/soap+xml\"");
-            return resp;
+
+            // Set proper Content-Type header for AS4 multipart/related
+            response.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(
+                $"multipart/related; boundary=\"{boundary}\"; " +
+                $"type=\"application/soap+xml\"; " +
+                $"start=\"<root.message@cxf.apache.org>\""
+            );
+
+            return response;
         }
         public class Attachment
         {

@@ -1,121 +1,173 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Configuration;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Threading.Tasks;
 using System.Web;
-using System.Xml.Linq;
+using System.Xml.Serialization;
+using log4net;
+using PeppolSG.API.Models;
+using System.Runtime.Caching;
+using PeppolSG.API.Service.Interfaces;
 
 namespace PeppolSG.API.Service
 {
-    public class SmkSmpLookupService
+    /// <summary>
+    /// Enhanced SMP Lookup Service for Peppol participant discovery.
+    /// Implements BUSDOX SMP v1.0 and Peppol SMP Profile v1.1.0 specifications.
+    /// Includes caching and robust error handling for testbed compliance.
+    /// </summary>
+    public class SmkSmpLookupService : ISmkSmpLookupService
     {
-        //private static readonly ILog log = LogManager.GetLogger(typeof(SmkSmpLookupService));
-        private readonly string _smpDomain;
-        private readonly string _certPath;
-        private readonly string _certPwd;
+        private static readonly ILog log = LogManager.GetLogger(typeof(SmkSmpLookupService));
+        private static readonly HttpClient httpClient = new HttpClient();
+        private static readonly ObjectCache cache = MemoryCache.Default;
 
-        /// <param name="smpDomain">e.g. acc.edelivery.tech.ec.europa.eu (test), edelivery.tech.ec.europa.eu (prod)</param>
-        public SmkSmpLookupService(string smpDomain = "smp-test.peppol.org",
-                                    string certPath = null,
-                                    string certPwd = null)
+        private readonly IPeppolConfigurationService _configService;
+        private readonly ICertificateManager _certificateManager;
+
+        public SmkSmpLookupService(IPeppolConfigurationService configService, ICertificateManager certificateManager)
         {
-            _smpDomain = smpDomain;
-            _certPath = certPath ?? ConfigurationManager.AppSettings["PeppolP12FilePath"];
-            _certPwd = certPwd ?? ConfigurationManager.AppSettings["PeppolP12Password"];
+            _configService = configService ?? throw new ArgumentNullException(nameof(configService));
+            _certificateManager = certificateManager ?? throw new ArgumentNullException(nameof(certificateManager));
+
+            // Configure HttpClient for SMP lookups
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "PeppolSG-AccessPoint/1.0");
+            httpClient.Timeout = TimeSpan.FromSeconds(30); // 30-second timeout
         }
 
         /// <summary>
-        /// EDN SMP ServiceMetadata endpoint for a given participant/docTypeId (no MD5/B- stuff!)
+        /// Main method to look up endpoint metadata for a Peppol participant.
+        /// Caches results for performance.
         /// </summary>
-        public string BuildEdnSmpServiceMetadataUrl(string participantScheme, string participantId, string documentTypeId)
+        public async Task<SmpEndpoint> LookupEndpointMetadata(string participantId, string participantScheme, string documentTypeId, string processId)
         {
-            // Compose: scheme::id
-            var fullPid = $"{participantScheme}::{participantId}";
-            var encodedPid = HttpUtility.UrlEncode(fullPid);
+            if (string.IsNullOrEmpty(participantId)) throw new ArgumentNullException(nameof(participantId));
+            if (string.IsNullOrEmpty(documentTypeId)) throw new ArgumentNullException(nameof(documentTypeId));
+
+            var cacheKey = $"smp::{participantId}::{documentTypeId}::{processId}";
+            var cachedEndpoint = cache[cacheKey] as SmpEndpoint;
+
+            if (cachedEndpoint != null)
+            {
+                log.Info($"SMP metadata found in cache for key: {cacheKey}");
+                return cachedEndpoint;
+            }
+
+            log.Info($"Performing live SMP lookup for {participantId}");
+
+            // Perform SMP lookup
+            var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId);
+            var serviceMetadata = await GetServiceMetadata(smpUrl);
+
+            if (serviceMetadata == null || serviceMetadata.ServiceInformation == null)
+            {
+                throw new InvalidOperationException($"No valid ServiceInformation found at SMP URL: {smpUrl}");
+            }
+
+            // Find the correct endpoint for the given process
+            var endpoint = FindPeppolAs4Endpoint(serviceMetadata, processId);
+
+            if (endpoint == null)
+            {
+                throw new InvalidOperationException($"No Peppol AS4 endpoint found for process '{processId}'");
+            }
+
+            // Validate the certificate from the endpoint
+            var certificate = new X509Certificate2(Convert.FromBase64String(endpoint.Certificate));
+            if (!_certificateManager.ValidateCertificate(certificate))
+            {
+                throw new CryptographicException("Certificate from SMP endpoint failed validation");
+            }
+
+            // Cache the result
+            var cachePolicy = new CacheItemPolicy { AbsoluteExpiration = DateTimeOffset.Now.AddHours(24) };
+            cache.Set(cacheKey, endpoint, cachePolicy);
+
+            log.Info($"SMP lookup successful for {participantId} - endpoint cached.");
+            return endpoint;
+        }
+
+        /// <summary>
+        /// Constructs the SMP URL based on the Peppol SMP specification.
+        /// </summary>
+        private string BuildSmpUrl(string participantScheme, string participantId, string documentTypeId)
+        {
+            // 1. Create MD5 hash of the participant identifier
+            var fullIdentifier = $"{participantScheme}::{participantId}";
+            var hash = MD5.Create().ComputeHash(Encoding.UTF8.GetBytes(fullIdentifier.ToLower()));
+            var hashedIdentifier = BitConverter.ToString(hash).Replace("-", "").ToLower();
+
+            // 2. Construct the URL
+            var smpDomain = _configService.SmpDomain;
             var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
-            var url = $"http://{_smpDomain}/{encodedPid}/services/{encodedDocType}";
-            //log.Info($"Constructed Peppol EDN SMP ServiceMetadata URL: {url}");
+            var url = $"https://{smpDomain}/{hashedIdentifier}/services/{encodedDocType}";
+            
+            log.Debug($"Constructed SMP URL: {url}");
             return url;
         }
 
         /// <summary>
-        /// SMP lookup for AS4 endpoint and certificate (EDN/EDelivery SMP style)
+        /// Retrieves and deserializes ServiceMetadata from the SMP server.
         /// </summary>
-        /// <param name="participantId">e.g., "9922:NGTBCNTRLP1001"</param>
-        /// <param name="participantScheme">e.g., "iso6523-actorid-upis"</param>
-        /// <param name="documentTypeId">e.g., "busdox-docid-qns::urn:..."</param>
-        /// <param name="processId">e.g., "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"</param>
-        public async Task<PeppolEndpointMetadata> LookupEndpointMetadata(string participantId, string participantScheme, string documentTypeId, string processId)
+        private async Task<SmpServiceMetadata> GetServiceMetadata(string smpUrl)
         {
-            var smpUrl = BuildEdnSmpServiceMetadataUrl(participantScheme, participantId, documentTypeId);
-
-            // Load client certificate
-            var cert = new X509Certificate2(_certPath, _certPwd, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable);
-
-            var handler = new HttpClientHandler();
-            handler.ClientCertificates.Add(cert);
-            handler.ServerCertificateCustomValidationCallback = (sender, clientCert, chain, sslPolicyErrors) => true; // Accept all (test only!)
-
-            using (var httpClient = new HttpClient(handler))
+            try
             {
                 var response = await httpClient.GetAsync(smpUrl);
-                //log.Info($"Response: {response}");
-                if (!response.IsSuccessStatusCode)
-                    throw new Exception($"SMP not found for {participantId}: {response.StatusCode}");
+                response.EnsureSuccessStatusCode();
 
-                var xml = await response.Content.ReadAsStringAsync();
-                var doc = XDocument.Parse(xml);
-
-                XNamespace smp = "http://busdox.org/serviceMetadata/publishing/1.0/";
-                XNamespace id = "http://busdox.org/transport/identifiers/1.0/";
-                XNamespace wsa = "http://www.w3.org/2005/08/addressing";
-
-                var processList = doc.Descendants(smp + "Process").ToList();
-                if (!processList.Any())
-                    throw new Exception("No <Process> element found in SMP ServiceMetadata.");
-
-                XElement endpoint = null;
-                foreach (var process in processList)
+                var xmlContent = await response.Content.ReadAsStringAsync();
+                
+                // Deserialize XML into SmpServiceMetadata object
+                var serializer = new XmlSerializer(typeof(SmpServiceMetadata));
+                using (var reader = new StringReader(xmlContent))
                 {
-                    var processIdVal = process.Element(id + "ProcessIdentifier")?.Value ?? "";
-                    if (!string.IsNullOrEmpty(processId) && !processIdVal.Contains(processId))
-                        continue;
-
-                    // Look for AS4 endpoint (either v2_0 or v1_0)
-                    endpoint = process
-                        .Descendants(smp + "Endpoint")
-                        .FirstOrDefault(e => (string)e.Attribute("transportProfile") != null
-                            && ((string)e.Attribute("transportProfile")).Contains("peppol-transport-as4"));
-
-                    if (endpoint != null)
-                        break; // found valid AS4 endpoint for process
+                    return (SmpServiceMetadata)serializer.Deserialize(reader);
                 }
-
-                if (endpoint == null)
-                    throw new Exception("No AS4 endpoint found in SMP metadata for process " + processId);
-
-                // The endpoint URL is in <wsa:Address>
-                var endpointUrl = endpoint.Element(wsa + "EndpointReference")?.Element(wsa + "Address")?.Value;
-                if (string.IsNullOrEmpty(endpointUrl))
-                    throw new Exception("No Endpoint URL found in SMP metadata");
-
-                // The cert is in <smp:Certificate>
-                var certificate = endpoint.Element(smp + "Certificate")?.Value;
-                if (string.IsNullOrEmpty(certificate))
-                    throw new Exception("No Certificate found in SMP metadata");
-
-                return new PeppolEndpointMetadata
-                {
-                    EndpointUrl = endpointUrl.Trim(),
-                    Certificate = certificate.Trim()
-                };
             }
+            catch (HttpRequestException ex)
+            {
+                log.Error($"HTTP request to SMP server failed: {ex.Message}", ex);
+                throw new InvalidOperationException($"SMP lookup failed for URL '{smpUrl}'", ex);
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Error processing SMP response: {ex.Message}", ex);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Finds the Peppol AS4 endpoint from the ServiceMetadata based on the process ID.
+        /// </summary>
+        private SmpEndpoint FindPeppolAs4Endpoint(SmpServiceMetadata metadata, string processId)
+        {
+            foreach (var process in metadata.ServiceInformation.ProcessList)
+            {
+                if (process.ProcessIdentifier.Value.Equals(processId, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Find AS4 endpoint (v1 or v2)
+                    var as4Endpoint = process.ServiceEndpointList.Endpoints
+                        .FirstOrDefault(e => e.TransportProfile.Contains("peppol-transport-as4"));
+
+                    if (as4Endpoint != null)
+                    {
+                        return as4Endpoint;
+                    }
+                }
+            }
+            return null;
         }
     }
 
+    /// <summary>
+    /// Legacy model for backward compatibility with As4Controller.
+    /// To be replaced with SmpEndpoint model in future refactoring.
+    /// </summary>
     public class PeppolEndpointMetadata
     {
         public string EndpointUrl { get; set; }
