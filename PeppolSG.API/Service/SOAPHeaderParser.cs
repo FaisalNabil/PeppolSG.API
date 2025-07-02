@@ -5,6 +5,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Web;
 using System.Xml.Linq;
+using PeppolSG.API.Models;
 
 namespace PeppolSG.API.Service
 {
@@ -35,28 +36,50 @@ namespace PeppolSG.API.Service
     public static class SOAPHeaderParser
     {
         // 1. Extract sender certificate from SOAP header
-        public static X509Certificate2 GetSenderCertificate(XDocument soapDoc)
+        public static X509Certificate2 GetSenderCertificate(XDocument soapDoc, string correlationId = null)
         {
+            var logger = log4net.LogManager.GetLogger(typeof(SOAPHeaderParser));
+            
             var security = XmlHelper.FindAllElementsByLocalName(soapDoc.Root, "Security").FirstOrDefault();
             if (security == null)
-                throw new Exception("No <Security> header found in SOAP.");
+            {
+                var message = "No <Security> header found in SOAP.";
+                logger.Error($"[{correlationId}] AS4 Security header extraction failed: {message}");
+                throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0101");
+            }
 
             var sigNodes = XmlHelper.FindAllElementsByLocalName(security, "Signature").ToList();
             if (sigNodes.Count != 1)
-                throw new Exception($"Expected one Signature element in header, found {sigNodes.Count}.");
+            {
+                var message = $"Expected one Signature element in header, found {sigNodes.Count}.";
+                logger.Error($"[{correlationId}] AS4 Signature validation failed: {message}");
+                throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0102");
+            }
             var sigElement = sigNodes[0];
 
             var keyInfoNodes = XmlHelper.FindAllElementsByLocalName(sigElement, "KeyInfo").ToList();
             if (keyInfoNodes.Count != 1)
-                throw new Exception($"Expected one KeyInfo under Signature, found {keyInfoNodes.Count}.");
+            {
+                var message = $"Expected one KeyInfo under Signature, found {keyInfoNodes.Count}.";
+                logger.Error($"[{correlationId}] AS4 KeyInfo validation failed: {message}");
+                throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0102");
+            }
             var keyInfoElement = keyInfoNodes[0];
 
             var refNodes = XmlHelper.FindAllElementsByLocalName(keyInfoElement, "Reference").ToList();
             if (refNodes.Count != 1)
-                throw new Exception("Zero or multiple Reference nodes under Signature->KeyInfo");
+            {
+                var message = "Zero or multiple Reference nodes under Signature->KeyInfo";
+                logger.Error($"[{correlationId}] AS4 Reference validation failed: {message}");
+                throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0102");
+            }
             var refUri = refNodes[0].Attribute("URI")?.Value?.Replace("#", "");
             if (string.IsNullOrEmpty(refUri))
-                throw new Exception("Reference URI not found in <Reference>.");
+            {
+                var message = "Reference URI not found in <Reference>.";
+                logger.Error($"[{correlationId}] AS4 Reference URI validation failed: {message}");
+                throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0102");
+            }
 
             // Find BinarySecurityToken with wsu:Id or Id matching refUri
             var bstNodes = XmlHelper.FindAllElementsByLocalName(security, "BinarySecurityToken");
@@ -67,11 +90,26 @@ namespace PeppolSG.API.Service
                 if (idAttr != null && idAttr.Value == refUri)
                 {
                     var pem = bstElem.Value.Replace("\r", "").Replace("\n", "").Trim();
-                    var buf = Convert.FromBase64String(pem);
-                    return new X509Certificate2(buf);
+                    if (!string.IsNullOrWhiteSpace(pem))
+                    {
+                        try
+                        {
+                            var buf = Convert.FromBase64String(pem);
+                            return new X509Certificate2(buf);
+                        }
+                        catch (Exception ex)
+                        {
+                            var message = $"Failed to parse certificate from BinarySecurityToken: {ex.Message}";
+                            logger.Error($"[{correlationId}] Certificate parsing failed: {message}", ex);
+                            throw new PeppolAs4SecurityException(message, correlationId, errorCode: "EBMS:0101");
+                        }
+                    }
                 }
             }
-            throw new Exception($"No BinarySecurityToken found with Id or wsu:Id='{refUri}'");
+            
+            var errorMessage = $"No BinarySecurityToken found with Id or wsu:Id='{refUri}'";
+            logger.Error($"[{correlationId}] BinarySecurityToken lookup failed: {errorMessage}");
+            throw new PeppolAs4SecurityException(errorMessage, correlationId, errorCode: "EBMS:0101");
         }
 
         // 2. Extract SignatureValue as byte[]

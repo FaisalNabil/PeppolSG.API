@@ -206,6 +206,7 @@
     <Compile Include="Models\As4Attachment.cs" />
     <Compile Include="Models\As4InboundMetadata.cs" />
     <Compile Include="Models\MimePart.cs" />
+    <Compile Include="Models\PeppolExceptions.cs" />
     <Compile Include="Models\PeppolHeaderInfo.cs" />
     <Compile Include="Models\SmpModels.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

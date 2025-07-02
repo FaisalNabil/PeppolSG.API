@@ -119,8 +119,14 @@ namespace PeppolSG.API.Controllers
 
                 if (!validationResult.IsValid)
                 {
+                    if (validationResult.Errors == null || !validationResult.Errors.Any())
+                    {
+                        log.Error($"[{correlationId}] Validation failed but no error details available");
+                        return await HandleEbms3Error(correlationId, "EBMS:0004", "Error", "Message validation failed without specific error details", validationResult.MessageId, HttpStatusCode.BadRequest);
+                    }
+                    
                     var error = validationResult.Errors.First();
-                    return await HandleEbms3Error(correlationId, error.Code, error.Severity, error.Description, validationResult.MessageId, HttpStatusCode.BadRequest);
+                    return await HandleEbms3Error(correlationId, error.Code ?? "EBMS:0004", error.Severity ?? "Error", error.Description ?? "Validation failed", validationResult.MessageId, HttpStatusCode.BadRequest);
                 }
 
                 // Convert XDocument to XmlDocument for VerifyTimestamp
@@ -1064,9 +1070,20 @@ namespace PeppolSG.API.Controllers
     public interface IMetadataPersister { void Persist(As4InboundMetadata metadata); }
     public class FileSystemMetadataPersister : IMetadataPersister
     {
+        private readonly IPeppolConfigurationService _configService;
+
+        public FileSystemMetadataPersister() : this(new PeppolConfigurationService()) { }
+        
+        public FileSystemMetadataPersister(IPeppolConfigurationService configService)
+        {
+            _configService = configService ?? throw new ArgumentNullException(nameof(configService));
+        }
+
         public void Persist(As4InboundMetadata metadata)
         {
-            var dir = Path.Combine("C:\\As4Inbound", metadata.MessageId);
+            if (!_configService.EnableFileSystemPersistence) return;
+
+            var dir = Path.Combine(_configService.InboundStoragePath, metadata.MessageId);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "metadata.json"),
                 System.Text.Json.JsonSerializer.Serialize(metadata));
@@ -1076,9 +1093,20 @@ namespace PeppolSG.API.Controllers
     public interface IPayloadPersister { string Persist(string messageId, PayloadInfo info, byte[] data); }
     public class FileSystemPayloadPersister : IPayloadPersister
     {
+        private readonly IPeppolConfigurationService _configService;
+
+        public FileSystemPayloadPersister() : this(new PeppolConfigurationService()) { }
+        
+        public FileSystemPayloadPersister(IPeppolConfigurationService configService)
+        {
+            _configService = configService ?? throw new ArgumentNullException(nameof(configService));
+        }
+
         public string Persist(string messageId, PayloadInfo info, byte[] data)
         {
-            var dir = Path.Combine("C:\\As4Inbound", messageId, "payloads");
+            if (!_configService.EnableFileSystemPersistence) return null;
+
+            var dir = Path.Combine(_configService.InboundStoragePath, messageId, "payloads");
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, $"{info.ContentId ?? Guid.NewGuid().ToString()}.{(info.IsGzip ? "gz" : "bin")}");
             File.WriteAllBytes(path, data);

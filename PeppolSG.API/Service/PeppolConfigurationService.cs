@@ -3,6 +3,7 @@ using System.Configuration;
 using System.Security.Cryptography.X509Certificates;
 using log4net;
 using PeppolSG.API.Service.Interfaces;
+using System.IO;
 
 namespace PeppolSG.API.Service
 {
@@ -54,7 +55,7 @@ namespace PeppolSG.API.Service
         public string ResponderRole => "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/responder";
 
         // Default MPC
-        public string DefaultMPC => "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/defaultMPC";
+        public string DefaultMPC => ConfigurationManager.AppSettings["PeppolDefaultMPC"] ?? "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/defaultMPC";
 
         // Test Service
         public string TestService => "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/service";
@@ -113,6 +114,11 @@ namespace PeppolSG.API.Service
         public string MessageStorePath => ConfigurationManager.AppSettings["MessageStorePath"] ?? "~/App_Data/messages";
         public string MetadataStorePath => ConfigurationManager.AppSettings["MetadataStorePath"] ?? "~/App_Data/metadata";
         public string LogStorePath => ConfigurationManager.AppSettings["LogStorePath"] ?? "~/App_Data/logs";
+
+        // Storage Configuration Properties
+        public string InboundStoragePath => GetConfiguredPath("PeppolInboundStoragePath", "~/App_Data/As4Inbound");
+        public string LogPath => GetConfiguredPath("PeppolLogPath", "~/App_Data/Logs");
+        public bool EnableFileSystemPersistence => bool.Parse(ConfigurationManager.AppSettings["EnableFileSystemPersistence"] ?? "true");
 
         #endregion
 
@@ -273,6 +279,30 @@ namespace PeppolSG.API.Service
                 EnableCompression = this.EnableCompression,
                 CompressionType = this.CompressionType
             };
+        }
+
+        // Path Resolution Helper
+        private string GetConfiguredPath(string configKey, string defaultPath)
+        {
+            var configuredPath = ConfigurationManager.AppSettings[configKey] ?? defaultPath;
+            
+            // Handle relative paths (starting with ~/)
+            if (configuredPath.StartsWith("~/"))
+            {
+                var httpContext = System.Web.HttpContext.Current;
+                if (httpContext != null)
+                {
+                    return httpContext.Server.MapPath(configuredPath);
+                }
+                else
+                {
+                    // For unit testing or non-web contexts, use current directory
+                    return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, configuredPath.Substring(2).Replace('/', '\\'));
+                }
+            }
+            
+            // Handle absolute paths
+            return Path.GetFullPath(configuredPath);
         }
     }
 

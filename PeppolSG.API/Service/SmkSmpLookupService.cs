@@ -20,10 +20,10 @@ namespace PeppolSG.API.Service
     /// Implements BUSDOX SMP v1.0 and Peppol SMP Profile v1.1.0 specifications.
     /// Includes caching and robust error handling for testbed compliance.
     /// </summary>
-    public class SmkSmpLookupService : ISmkSmpLookupService
+    public class SmkSmpLookupService : ISmkSmpLookupService, IDisposable
     {
         private static readonly ILog log = LogManager.GetLogger(typeof(SmkSmpLookupService));
-        private static readonly HttpClient httpClient = new HttpClient();
+        private readonly HttpClient _httpClient;
         private static readonly ObjectCache cache = MemoryCache.Default;
 
         private readonly IPeppolConfigurationService _configService;
@@ -34,9 +34,10 @@ namespace PeppolSG.API.Service
             _configService = configService ?? throw new ArgumentNullException(nameof(configService));
             _certificateManager = certificateManager ?? throw new ArgumentNullException(nameof(certificateManager));
 
-            // Configure HttpClient for SMP lookups
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "PeppolSG-AccessPoint/1.0");
-            httpClient.Timeout = TimeSpan.FromSeconds(30); // 30-second timeout
+            // Initialize HttpClient with proper configuration
+            _httpClient = new HttpClient();
+            _httpClient.DefaultRequestHeaders.Add("User-Agent", "PeppolSG-AccessPoint/1.0");
+            _httpClient.Timeout = TimeSpan.FromSeconds(30); // 30-second timeout
         }
 
         /// <summary>
@@ -117,7 +118,7 @@ namespace PeppolSG.API.Service
         {
             try
             {
-                var response = await httpClient.GetAsync(smpUrl);
+                var response = await _httpClient.GetAsync(smpUrl);
                 response.EnsureSuccessStatusCode();
 
                 var xmlContent = await response.Content.ReadAsStringAsync();
@@ -161,6 +162,11 @@ namespace PeppolSG.API.Service
                 }
             }
             return null;
+        }
+
+        public void Dispose()
+        {
+            _httpClient?.Dispose();
         }
     }
 

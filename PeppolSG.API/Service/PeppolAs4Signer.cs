@@ -32,7 +32,7 @@ namespace PeppolSG.API.Service
 
         /// <summary>
         /// Sign the SOAP envelope, encrypting an attachment if requested.
-        /// Note how we now call the builder methods above.
+        /// Enhanced version without dangerous reflection usage.
         /// </summary>
         public static void SignEnvelope(
             XDocument envelopeXml,
@@ -65,21 +65,10 @@ namespace PeppolSG.API.Service
             sxml.AddReference(CreateExcC14NReference("#" + messagingId));
             sxml.AddReference(CreateExcC14NReference("#" + bodyId));
 
-            // 4) If there's an attachment, encrypt it and add its EncryptedKey/Data
+            // 4) If there's an attachment, encrypt it and add reference with direct digest calculation
             if (!string.IsNullOrEmpty(attachmentCid) && encryptedAttachment != null)
             {
-                var attachRef = new Reference(attachmentCid)
-                {
-                    DigestMethod = SignedXml.XmlDsigSHA256Url
-                };
-                attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
-
-                // bind the in-memory encrypted bytes to that Reference
-                var fieldData = typeof(Reference).GetField("m_refTarget", BindingFlags.NonPublic | BindingFlags.Instance);
-                var fieldType = typeof(Reference).GetField("m_refTargetType", BindingFlags.NonPublic | BindingFlags.Instance);
-                fieldData.SetValue(attachRef, new MemoryStream(encryptedAttachment));
-                fieldType.SetValue(attachRef, 0); // stream
-
+                var attachRef = CreateAttachmentReference(attachmentCid, encryptedAttachment);
                 sxml.AddReference(attachRef);
             }
 
@@ -90,9 +79,6 @@ namespace PeppolSG.API.Service
             sxml.ComputeSignature();
             var signatureXml = sxml.GetXml();
 
-            // remove any <ec:InclusiveNamespaces> leftovers if you like...
-            // patch transforms for attachment refs to use the SwA‐profile URI, if needed.
-
             // 7) Replace the placeholder <ds:Signature/> in the envelope
             ReplaceSignature(xmlDoc, signatureXml);
 
@@ -102,6 +88,39 @@ namespace PeppolSG.API.Service
                 xmlDoc.Save(ms);
                 ms.Position = 0;
                 envelopeXml.Root.ReplaceWith(XDocument.Load(ms).Root);
+            }
+        }
+
+        /// <summary>
+        /// Creates an attachment reference with safe digest calculation (no reflection)
+        /// </summary>
+        private static Reference CreateAttachmentReference(string attachmentCid, byte[] encryptedAttachment)
+        {
+            var attachRef = new Reference(attachmentCid)
+            {
+                DigestMethod = SignedXml.XmlDsigSHA256Url
+            };
+            
+            // Add the SwA transform for Peppol AS4 compliance
+            attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
+            
+            // Calculate digest directly without reflection
+            var digest = ComputeSha256Digest(encryptedAttachment);
+            
+            // Set the digest value directly using the public API
+            attachRef.DigestValue = digest;
+            
+            return attachRef;
+        }
+
+        /// <summary>
+        /// Computes SHA256 digest for attachment without reflection usage
+        /// </summary>
+        private static byte[] ComputeSha256Digest(byte[] data)
+        {
+            using (var sha256 = SHA256.Create())
+            {
+                return sha256.ComputeHash(data);
             }
         }
 
