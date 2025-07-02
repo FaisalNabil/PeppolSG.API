@@ -10,6 +10,7 @@ using System.Web;
 using System.Xml.Linq;
 using System.Security.Cryptography.Xml;
 using PeppolSG.API.Service.Interfaces;
+using PeppolSG.API.Models;
 
 namespace PeppolSG.API.Service
 {
@@ -570,7 +571,7 @@ namespace PeppolSG.API.Service
         /// </summary>
         public HttpResponseMessage CreateMtomResponse(
             XDocument soapEnvelope,
-            IList<Attachment> attachments,
+            IList<As4Attachment> attachments,
             HttpStatusCode statusCode)
         {
             if (soapEnvelope == null) throw new ArgumentNullException(nameof(soapEnvelope));
@@ -619,12 +620,7 @@ namespace PeppolSG.API.Service
 
             return response;
         }
-        public class Attachment
-        {
-            public string ContentId { get; set; }
-            public string ContentType { get; set; }
-            public byte[] Bytes { get; set; }
-        }
+
 
     }
 }

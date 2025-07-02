@@ -203,6 +203,7 @@
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>
     </Compile>
+    <Compile Include="Models\As4Attachment.cs" />
     <Compile Include="Models\As4InboundMetadata.cs" />
     <Compile Include="Models\MimePart.cs" />
     <Compile Include="Models\PeppolHeaderInfo.cs" />

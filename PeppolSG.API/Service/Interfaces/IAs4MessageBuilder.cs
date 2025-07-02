@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Net;
 using System.Xml.Linq;
+using PeppolSG.API.Models;
 
 namespace PeppolSG.API.Service.Interfaces
 {
@@ -13,7 +14,7 @@ namespace PeppolSG.API.Service.Interfaces
         XElement BuildMessaging(XElement messageOrSignal, string messagingId = null);
         XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader);
         XElement BuildSbdh(string senderId, string receiverId, string docTypeId, string processId, string instanceId, string creationDateTime);
-        HttpResponseMessage CreateMtomResponse(XDocument soapEnvelope, IList<As4MessageBuilder.Attachment> attachments, HttpStatusCode statusCode);
+        HttpResponseMessage CreateMtomResponse(XDocument soapEnvelope, IList<As4Attachment> attachments, HttpStatusCode statusCode);
         XDocument WrapInSoapEnvelope(XElement securityHeader, XElement messaging, string bodyId);
         XElement BuildBinarySecurityToken(System.Security.Cryptography.X509Certificates.X509Certificate2 cert, string bstId);
         XElement BuildEncryptedKey(string ekId, string bstToRefId, string encryptedKeyB64, string dataRefId);
