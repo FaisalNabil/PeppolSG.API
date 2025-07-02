@@ -35,7 +35,6 @@ namespace PeppolSG.API.Controllers
         private readonly ICertificateManager _certificateManager;
         private readonly ISmkSmpLookupService _smkSmpLookup;
         private readonly IAs4MessageBuilder _messageBuilder;
-        private readonly IPeppolAs4Signer _signer;
         private readonly IMimeParserService _mimeParser;
 
         /// <summary>
@@ -50,7 +49,6 @@ namespace PeppolSG.API.Controllers
             _smkSmpLookup = new SmkSmpLookupService(_configService, _certificateManager);
             _messageValidator = new PeppolAs4MessageValidator(_configService);
             _messageBuilder = new As4MessageBuilder(_configService);
-            _signer = new PeppolAs4Signer(_configService);
             _mimeParser = new MimeParserService();
             
             log.Info("AS4 Controller initialized with default service container.");
@@ -65,7 +63,6 @@ namespace PeppolSG.API.Controllers
             ICertificateManager certificateManager,
             ISmkSmpLookupService smkSmpLookup,
             IAs4MessageBuilder messageBuilder,
-            IPeppolAs4Signer signer,
             IMimeParserService mimeParser)
         {
             _configService = configService;
@@ -73,7 +70,6 @@ namespace PeppolSG.API.Controllers
             _certificateManager = certificateManager;
             _smkSmpLookup = smkSmpLookup;
             _messageBuilder = messageBuilder;
-            _signer = signer;
             _mimeParser = mimeParser;
 
             log.Info("AS4 Controller initialized via Dependency Injection.");
@@ -115,7 +111,7 @@ namespace PeppolSG.API.Controllers
                     return await HandleEbms3Error(correlationId, error.Code, error.Severity, error.Description, validationResult.MessageId, HttpStatusCode.BadRequest);
                 }
 
-                if (!_signer.VerifyTimestamp(soapXml))
+                if (!PeppolAs4Signer.VerifyTimestamp(soapXml))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0103", "SecurityFailure", "Timestamp validation failed.", validationResult.MessageId, HttpStatusCode.Unauthorized);
                 }
@@ -133,7 +129,7 @@ namespace PeppolSG.API.Controllers
                     return await HandleEbms3Error(correlationId, "EBMS:0101", "FailedAuthentication", "Sender certificate is not valid.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
                 
-                if (!_signer.VerifyMessageSignature(soapXml, senderCert))
+                if (!PeppolAs4Signer.VerifyMessageSignature(soapXml, senderCert))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0102", "FailedAuthentication", "Message signature validation failed.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
@@ -182,7 +178,7 @@ namespace PeppolSG.API.Controllers
             var messaging = _messageBuilder.BuildMessaging(receiptMessage, messagingId);
             var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, securityHeader);
 
-            _signer.SignEnvelope(soapEnvelope, signingCert, bstId, messagingId, bodyId);
+            PeppolAs4Signer.SignEnvelope(soapEnvelope, signingCert, bstId, messagingId, bodyId);
 
             var response = _messageBuilder.CreateMtomResponse(soapEnvelope, null, HttpStatusCode.OK);
             return ResponseMessage(response);
@@ -220,7 +216,7 @@ namespace PeppolSG.API.Controllers
                 try
                 {
                     var signingCert = _configService.LoadSigningCertificate();
-                    var wsSecurityHeader = _signer.BuildWsSecurityHeader(
+                    var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(
                         messaging, signingCert, errorTimestamp, messagingId);
                     soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
                 }
@@ -435,7 +431,7 @@ namespace PeppolSG.API.Controllers
                     var bodyId = "id-" + Guid.NewGuid().ToString("N");
                     soapDoc = _messageBuilder.WrapInSoapEnvelope(wsseSec, messaging, bodyId);
                     
-                    _signer.SignEnvelope(
+                    PeppolAs4Signer.SignEnvelope(
                         soapDoc, 
                         _configService.GetSigningCertificatePath(), 
                         _configService.GetSigningCertificatePassword(),

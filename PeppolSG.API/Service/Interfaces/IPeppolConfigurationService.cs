@@ -30,7 +30,11 @@ namespace PeppolSG.API.Service.Interfaces
         int RetryCount { get; }
         int RetryInterval { get; }
         bool DuplicateDetection { get; }
-        X509Certificate2 LoadPeppolCertificate();
+        X509Certificate2 LoadSigningCertificate();
         PeppolPModeConfiguration GetPModeConfiguration(string service, string action, string fromParty, string toParty);
+        string GetPeppolDomain();
+        string GetSigningCertificatePath();
+        string GetSigningCertificatePassword();
+        bool IsDebugMode();
     }
 } 

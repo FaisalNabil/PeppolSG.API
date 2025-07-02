@@ -474,4 +474,53 @@ This section documents new architectural and maintainability issues identified d
 
 ---
 
+### **Day 7: Post-Refactoring Error Resolution**
+**Status**: COMPLETED  
+**Objective**: Resolve all compilation errors introduced during the Day 6 architectural refactoring and ensure the project builds successfully.
+
+#### **Task 1: Fix DI and Static Class Usage in `As4Controller`**
+- **Analysis & Root Cause**: The `PeppolAs4Signer` class was refactored into a `static` utility class, but the `As4Controller` is still attempting to use it via dependency injection as an instance (`_peppolAs4Signer`). This causes instantiation errors (`CS0712`) and incorrect method call errors (`CS1061`).
+- **Affected Files**: `As4Controller.cs`
+- **Plan**:
+    1. Remove the `IPeppolAs4Signer` from the `As4Controller`'s constructor.
+    2. Change all calls from `_peppolAs4Signer.MethodName(...)` to the static equivalent: `PeppolAs4Signer.MethodName(...)`.
+- **Status**: `Completed`
+
+#### **Task 2: Resolve Missing Members on Service Interfaces**
+- **Analysis & Root Cause**: During the creation of interfaces for the services, several public methods were not added to their respective interfaces. This leads to `CS1061` errors where the controller tries to call methods that are not part of the interface contract (e.g., `GetPeppolDomain`, `LoadSigningCertificate`). Additionally, some method definitions in `IAs4MessageBuilder` do not match what the controller expects.
+- **Affected Files**: `As4Controller.cs`, `IPeppolConfigurationService.cs`, `IAs4MessageBuilder.cs`
+- **Plan**:
+    1. Review the implementation of `PeppolConfigurationService` and add the missing method signatures (`GetPeppolDomain`, `LoadSigningCertificate`, `GetSigningCertificatePath`, `GetSigningCertificatePassword`, `IsDebugMode`) to the `IPeppolConfigurationService` interface.
+    2. Review `As4MessageBuilder` and add the missing method signatures (`BuildBinarySecurityToken`, `BuildEncryptedKey`, `BuildEncryptedData`, `BuildSecurityHeader`, `WrapInSoapEnvelope`) to the `IAs4MessageBuilder` interface.
+- **Status**: `Completed`
+
+#### **Task 3: Correct Missing using Directives and Type Name Errors**
+- **Analysis & Root Cause**: The extensive refactoring moved code between files, resulting in missing `using` statements for standard and third-party libraries (`System.Text`, `System.Xml`, `System.Security`, BouncyCastle types like `OaepEncoding`). This causes numerous `CS0103` and `CS0246` errors.
+- **Affected Files**: `As4Controller.cs`
+- **Plan**:
+    1. Add `using System.Text;` for `Encoding`.
+    2. Add `using System.Xml;` and `using System.Security.Cryptography.Xml;` for XML and signing operations.
+    3. Add `using System.Security;` for `SecurityException`.
+    4. Add the necessary BouncyCastle `using` statements for the cryptographic helper methods.
+- **Status**: `Completed`
+
+#### **Task 4: Resolve Ambiguous Reference for `MimePart`**
+- **Analysis & Root Cause**: The controller uses both `PeppolSG.API.Models.MimePart` (a local model) and `MimeKit.MimePart` (from a NuGet package). This ambiguity results in `CS0104` errors.
+- **Affected Files**: `As4Controller.cs`
+- **Plan**:
+    1. Fully qualify the type wherever it's used, for example, changing `MimePart` to `PeppolSG.API.Models.MimePart` when referring to the local model.
+- **Status**: `Completed`
+
+#### **Task 5: Fix Test Project Configuration and References**
+- **Analysis & Root Cause**: The test files (`IntegrationTests.cs`, `TestbedScenarios.cs`) are located in the main API project, which lacks the necessary MSTest NuGet packages and assembly references. This is the root cause of all `CS0234`, `CS0246`, and `CS0103` errors in the test files. This corresponds to **Issue #10** in the audit.
+- **Affected Files**: `IntegrationTests.cs`, `TestbedScenarios.cs`, `PeppolSG.API.csproj`
+- **Plan**:
+    1. Create a new, separate Unit Test Project named `PeppolSG.API.Tests`.
+    2. Move the `Tests` folder from `PeppolSG.API` to the new `PeppolSG.API.Tests` project.
+    3. Add the `MSTest.TestFramework` and `MSTest.TestAdapter` NuGet packages to the new test project.
+    4. Add a project reference from the test project to the main API project.
+- **Status**: `Completed`
+
+---
+
 *This document serves as the master plan for achieving Peppol testbed compliance. All changes and progress should be tracked against this plan, with daily updates to task and audit status.* 

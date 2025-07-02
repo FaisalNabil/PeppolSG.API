@@ -14,5 +14,10 @@ namespace PeppolSG.API.Service.Interfaces
         XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader);
         XElement BuildSbdh(string senderId, string receiverId, string docTypeId, string processId, string instanceId, string creationDateTime);
         HttpResponseMessage CreateMtomResponse(XDocument soapEnvelope, IList<As4MessageBuilder.Attachment> attachments, HttpStatusCode statusCode);
+        XDocument WrapInSoapEnvelope(XElement securityHeader, XElement messaging, string bodyId);
+        XElement BuildBinarySecurityToken(System.Security.Cryptography.X509Certificates.X509Certificate2 cert, string bstId);
+        XElement BuildEncryptedKey(string ekId, string bstToRefId, string encryptedKeyB64, string dataRefId);
+        XElement BuildEncryptedData(string edId, string ekId, string attachmentCid, bool gzip = true);
+        XElement BuildSecurityHeader(XElement recipientBstEl, XElement encryptedKeyEl, XElement encryptedDataEl, XElement senderBstEl);
     }
 } 

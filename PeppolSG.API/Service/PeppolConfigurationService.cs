@@ -116,10 +116,18 @@ namespace PeppolSG.API.Service
 
         #endregion
 
+        public string GetPeppolDomain() => PeppolDomain;
+
+        public string GetSigningCertificatePath() => PeppolP12FilePath;
+
+        public string GetSigningCertificatePassword() => PeppolP12Password;
+
+        public bool IsDebugMode() => bool.Parse(ConfigurationManager.AppSettings["DebugMode"] ?? "false");
+
         /// <summary>
         /// Loads and validates the Peppol certificate
         /// </summary>
-        public X509Certificate2 LoadPeppolCertificate()
+        public X509Certificate2 LoadSigningCertificate()
         {
             try
             {
@@ -195,7 +203,7 @@ namespace PeppolSG.API.Service
             // Validate certificate configuration
             try
             {
-                LoadPeppolCertificate();
+                LoadSigningCertificate();
             }
             catch (Exception ex)
             {
