@@ -36,5 +36,10 @@ namespace PeppolSG.API.Service.Interfaces
         string GetSigningCertificatePath();
         string GetSigningCertificatePassword();
         bool IsDebugMode();
+        
+        // Storage Configuration Properties
+        bool EnableFileSystemPersistence { get; }
+        string InboundStoragePath { get; }
+        string LogPath { get; }
     }
 } 

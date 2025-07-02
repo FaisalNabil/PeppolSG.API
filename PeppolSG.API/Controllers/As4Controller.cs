@@ -474,9 +474,9 @@ namespace PeppolSG.API.Controllers
 
                 // Step 11: Build MIME multipart/related message
                 log.Info($"[{correlationId}] Building MIME multipart message");
-                var attachments = new List<Service.As4MessageBuilder.Attachment>
+                var attachments = new List<As4Attachment>
                 {
-                    new Service.As4MessageBuilder.Attachment
+                    new As4Attachment
                     {
                         ContentId = attachmentCid,
                         ContentType = "application/octet-stream",
