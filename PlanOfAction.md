@@ -1626,6 +1626,7 @@ dotnet build --verbosity minimal
 - ✅ Compression type configuration available to all services
 - ✅ Peppol AS4 Profile v2.0.3 compliance maintained
 - ✅ All unit tests pass
+- ⚠️ Full solution build on macOS will still fail due to missing .NET Framework 4.8 reference assemblies; please verify on Windows with Developer Pack installed
 
 ---
 
