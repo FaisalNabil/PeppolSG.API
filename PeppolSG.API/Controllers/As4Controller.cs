@@ -4,18 +4,26 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Cryptography.Xml;
+using System.Text;
 using System.Threading.Tasks;
 using System.Web.Http;
+using System.Xml;
 using System.Xml.Linq;
+using log4net;
+using MimeKit;
+using Org.BouncyCastle.Crypto.Digests;
+using Org.BouncyCastle.Crypto.Encodings;
+using Org.BouncyCastle.Crypto.Engines;
+using Org.BouncyCastle.Security;
 using PeppolSG.API.Models;
 using PeppolSG.API.Service;
 using System.IO.Compression;
 using System.Runtime.Remoting.Messaging;
-using MimeKit;
 using PeppolSG.API.Service.Interfaces;
-using log4net;
 using LogManager = log4net.LogManager;
 
 namespace PeppolSG.API.Controllers
@@ -777,9 +785,9 @@ namespace PeppolSG.API.Controllers
             UserMessage userMsg)
         {
             // find all non-SOAP parts
-            var parts = new List<MimePart>();
+            var parts = new List<PeppolSG.API.Models.MimePart>();
             foreach (var e in related)
-                if (e is MimePart mp && mp.ContentType.MimeType != "application/soap+xml")
+                if (e is PeppolSG.API.Models.MimePart mp && mp.ContentType.MimeType != "application/soap+xml")
                     parts.Add(mp);
 
             if (parts.Count != hrefs.Count)
@@ -794,7 +802,7 @@ namespace PeppolSG.API.Controllers
                 string cid = href.Substring(4).Trim('<', '>');
 
                 // find matching part by Content-ID
-                MimePart part = parts[i];
+                PeppolSG.API.Models.MimePart part = parts[i];
                 string actualCid = part.ContentId;
                 if (string.IsNullOrEmpty(actualCid))
                 {
@@ -1026,7 +1034,7 @@ namespace PeppolSG.API.Controllers
             //multi.ContentType.Parameters.Add("start", "<" + rootContentId + ">"); // uncomment if you want to explicitly specify root
 
             // --- part 1: SOAP envelope ---
-            var soapPart = new MimePart("application", "soap+xml")
+            var soapPart = new PeppolSG.API.Models.MimePart("application", "soap+xml")
             {
                 Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString())), ContentEncoding.Binary)
             };
@@ -1036,7 +1044,7 @@ namespace PeppolSG.API.Controllers
             multi.Add(soapPart);
 
             // --- part 2: encrypted attachment ---
-            var attPart = new MimePart("application", "octet-stream")
+            var attPart = new PeppolSG.API.Models.MimePart("application", "octet-stream")
             {
                 Content = new MimeContent(new MemoryStream(attachmentBytes), ContentEncoding.Binary),
                 ContentTransferEncoding = ContentEncoding.Binary
@@ -1051,12 +1059,12 @@ namespace PeppolSG.API.Controllers
         public static MimeMessage BuildSoapOnly(XDocument soapDoc)
         {
             var msg = new MimeMessage();
-            msg.Body = new MimePart("application", "soap+xml")
+            msg.Body = new PeppolSG.API.Models.MimePart("application", "soap+xml")
             {
                 Content = new MimeContent(new MemoryStream(Encoding.UTF8.GetBytes(soapDoc.ToString())), ContentEncoding.Binary),
                 ContentTransferEncoding = ContentEncoding.Binary
             };
-            ((MimePart)msg.Body).ContentType.Charset = "UTF-8";
+            ((PeppolSG.API.Models.MimePart)msg.Body).ContentType.Charset = "UTF-8";
             return msg;
         }
 
