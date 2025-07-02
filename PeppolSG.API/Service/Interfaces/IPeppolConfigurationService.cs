@@ -41,5 +41,6 @@ namespace PeppolSG.API.Service.Interfaces
         bool EnableFileSystemPersistence { get; }
         string InboundStoragePath { get; }
         string LogPath { get; }
+        string CompressionType { get; }
     }
 } 
