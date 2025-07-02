@@ -59,8 +59,6 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Tests\IntegrationTests.cs" />
-    <Compile Include="Tests\TestbedScenarios.cs" />
     <Compile Include="Tests\UnitTests.cs" />
     <Compile Include="Tests\ComplianceTests.cs" />
     <Compile Include="Tests\ComplianceViolationTests.cs" />
