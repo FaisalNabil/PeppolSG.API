@@ -161,7 +161,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds SignalMessage (Receipt) according to AS4 Profile
         /// </summary>
-        public static XElement BuildSignalMessage(
+        public XElement BuildSignalMessage(
             string timestamp,
             string messageId,
             string refToMessageId,
@@ -198,7 +198,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds ebMS3 Error Message for AS4 failures
         /// </summary>
-        public static XElement BuildErrorMessage(
+        public XElement BuildErrorMessage(
             string timestamp,
             string messageId,
             string refToMessageId,
@@ -248,7 +248,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds Messaging element with proper namespace declarations
         /// </summary>
-        public static XElement BuildMessaging(XElement messageOrSignal, string messagingId = null)
+        public XElement BuildMessaging(XElement messageOrSignal, string messagingId = null)
         {
             var messaging = new XElement(EB + "Messaging",
                 // Required namespace declarations for eDelivery AS4 Profile
@@ -270,7 +270,7 @@ namespace PeppolSG.API.Service
         /// Builds complete SOAP envelope with WS-Security header
         /// Implementation for eDelivery AS4 Profile v1.1.0
         /// </summary>
-        public static XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader)
+        public XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader)
         {
             if (messaging == null) throw new ArgumentNullException(nameof(messaging));
 
@@ -295,7 +295,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Legacy method for backward compatibility
         /// </summary>
-        public static XDocument WrapInSoapEnvelope(XElement securityHeader, XElement messaging, string bodyId)
+        public XDocument WrapInSoapEnvelope(XElement securityHeader, XElement messaging, string bodyId)
         {
             var headerElements = new List<object>();
             if (securityHeader != null) headerElements.Add(securityHeader);
@@ -324,7 +324,7 @@ namespace PeppolSG.API.Service
         /// Builds WS-Security header with timestamp token for WS-Security 1.1.1 compliance
         /// Used by the AS4 controller for proper message signing
         /// </summary>
-        public static XElement BuildWsSecurityHeader(
+        public XElement BuildWsSecurityHeader(
             XElement messaging,
             X509Certificate2 signingCert,
             string timestamp,
@@ -375,7 +375,7 @@ namespace PeppolSG.API.Service
         /// Builds Standard Business Document Header (SBDH) for Peppol documents
         /// Implements SBDH v1.3 for Peppol Business Interoperability Specifications
         /// </summary>
-        public static XElement BuildSbdh(
+        public XElement BuildSbdh(
             string senderId,
             string receiverId,
             string docTypeId,
@@ -428,7 +428,7 @@ namespace PeppolSG.API.Service
             );
         }
 
-        public static XElement BuildWsseSecurity(X509Certificate2 cert, out string bstId)
+        public XElement BuildWsseSecurity(X509Certificate2 cert, out string bstId)
         {
             // create BST
             bstId = "X509-" + Guid.NewGuid().ToString("N");
@@ -453,7 +453,7 @@ namespace PeppolSG.API.Service
             );
         }
 
-        public static XElement BuildEncryptedKey(
+        public XElement BuildEncryptedKey(
             string ekId, string bstToRefId, string encryptedKeyB64, string dataRefId)
         {
             return new XElement(XENC + "EncryptedKey",
@@ -486,7 +486,7 @@ namespace PeppolSG.API.Service
             );
         }
 
-        public static XElement BuildEncryptedData(
+        public XElement BuildEncryptedData(
             string edId, string ekId, string attachmentCid, bool gzip = true)
         {
             var attrs = new List<XAttribute>
@@ -528,7 +528,7 @@ namespace PeppolSG.API.Service
                 )
             );
         }
-        public static XElement BuildBinarySecurityToken(X509Certificate2 cert, string bstId)
+        public XElement BuildBinarySecurityToken(X509Certificate2 cert, string bstId)
         {
             return new XElement(WSSE + "BinarySecurityToken",
                 // mandatory attributes per OASIS X509 Token Profile
@@ -542,7 +542,7 @@ namespace PeppolSG.API.Service
                 Convert.ToBase64String(cert.RawData)
             );
         }
-        public static XElement BuildSecurityHeader(
+        public XElement BuildSecurityHeader(
                    XElement recipientBstEl,
                    XElement encryptedKeyEl,
                    XElement encryptedDataEl,
@@ -568,7 +568,7 @@ namespace PeppolSG.API.Service
         /// Enhanced multipart message creation with proper AS4 structure
         /// Implements eDelivery AS4 Profile v1.1.0 multipart/related requirements
         /// </summary>
-        public static HttpResponseMessage CreateMtomResponse(
+        public HttpResponseMessage CreateMtomResponse(
             XDocument soapEnvelope,
             IList<Attachment> attachments,
             HttpStatusCode statusCode)

@@ -123,7 +123,12 @@ namespace PeppolSG.API.Controllers
                     return await HandleEbms3Error(correlationId, error.Code, error.Severity, error.Description, validationResult.MessageId, HttpStatusCode.BadRequest);
                 }
 
-                if (!PeppolAs4Signer.VerifyTimestamp(soapXml))
+                // Convert XDocument to XmlDocument for VerifyTimestamp
+                var xmlDoc = new XmlDocument { PreserveWhitespace = true };
+                using (var reader = soapXml.CreateReader())
+                    xmlDoc.Load(reader);
+                
+                if (!PeppolAs4Signer.VerifyTimestamp(xmlDoc))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0103", "SecurityFailure", "Timestamp validation failed.", validationResult.MessageId, HttpStatusCode.Unauthorized);
                 }
@@ -190,7 +195,9 @@ namespace PeppolSG.API.Controllers
             var messaging = _messageBuilder.BuildMessaging(receiptMessage, messagingId);
             var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, securityHeader);
 
-            PeppolAs4Signer.SignEnvelope(soapEnvelope, signingCert, bstId, messagingId, bodyId);
+            var certPath = _configService.GetSigningCertificatePath();
+            var certPassword = _configService.GetSigningCertificatePassword();
+            PeppolAs4Signer.SignEnvelope(soapEnvelope, certPath, certPassword, bstId, messagingId, bodyId);
 
             var response = _messageBuilder.CreateMtomResponse(soapEnvelope, null, HttpStatusCode.OK);
             return ResponseMessage(response);
@@ -228,8 +235,8 @@ namespace PeppolSG.API.Controllers
                 try
                 {
                     var signingCert = _configService.LoadSigningCertificate();
-                    var wsSecurityHeader = _messageBuilder.BuildSecurityHeader(
-                        messaging, signingCert, errorTimestamp, messagingId, new List<Service.As4MessageBuilder.Attachment>());
+                    // Build a basic WS-Security header for error messages
+                    var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, errorTimestamp, messagingId);
                     soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
                 }
                 catch (Exception ex)
