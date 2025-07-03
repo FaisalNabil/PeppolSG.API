@@ -53,9 +53,36 @@ namespace PeppolSG.API.Service
                     }
                 }
                 
-                // For now, we only care about the text content for the SOAP part.
-                // A more advanced implementation would handle binary content by decoding Base64 if needed.
-                part.ContentText = bodySection.TrimEnd('\r', '\n');
+                // CRITICAL FIX: Handle binary content properly for AS4 attachments
+                var contentType = part.ContentType.ToLowerInvariant();
+                var contentTransferEncoding = part.Headers.TryGetValue("content-transfer-encoding", out var encoding) 
+                    ? encoding.ToLowerInvariant() 
+                    : "binary";
+
+                if (contentType.Contains("xml") || contentType.Contains("text") || contentType.Contains("soap"))
+                {
+                    // Text content - treat as string
+                    part.ContentText = bodySection.TrimEnd('\r', '\n');
+                    part.ContentBytes = Encoding.UTF8.GetBytes(part.ContentText);
+                }
+                else
+                {
+                    // Binary content (encrypted attachments, etc.) - treat as raw bytes
+                    // CRITICAL: Don't use UTF-8 encoding for binary data
+                    if (contentTransferEncoding == "base64")
+                    {
+                        // Handle Base64 encoded binary content
+                        var base64Content = bodySection.TrimEnd('\r', '\n');
+                        part.ContentBytes = Convert.FromBase64String(base64Content);
+                        part.ContentText = null; // No text representation for binary
+                    }
+                    else
+                    {
+                        // Handle raw binary content
+                        part.ContentBytes = Encoding.UTF8.GetBytes(bodySection.TrimEnd('\r', '\n'));
+                        part.ContentText = null; // No text representation for binary
+                    }
+                }
                 
                 parts.Add(part);
             }

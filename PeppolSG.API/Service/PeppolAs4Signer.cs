@@ -141,23 +141,26 @@ namespace PeppolSG.API.Service
             keyInfoElement.SetAttribute("Id", "KI-" + Guid.NewGuid().ToString("N"));
 
             // WS-Security and WS-Utility namespace URIs as strings:
-            const string wsseNs = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0.xsd";
+            const string wsseNs = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd";
             const string wsuNs = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd";
 
-            // Build the <wsse:SecurityTokenReference>
-            var strElement = doc.CreateElement("wsse", "SecurityTokenReference");
-            // !!! here's the fix: use the namespace URI string, not an XName !!!
+            // Build the <wsse:SecurityTokenReference> with proper namespace declarations
+            var strElement = doc.CreateElement("wsse", "SecurityTokenReference", wsseNs);
+            
+            // CRITICAL FIX: Properly declare namespaces for WSS4J compatibility
+            strElement.SetAttribute("xmlns:wsse", wsseNs);
+            strElement.SetAttribute("xmlns:wsu", wsuNs);
+            
+            // CRITICAL FIX: Set wsu:Id attribute using proper namespace URI, not XName
             strElement.SetAttribute("Id", wsuNs, "STR-" + Guid.NewGuid().ToString("N"));
 
-            // Build the inner <wsse:Reference>
+            // Build the inner <wsse:Reference> with proper namespace and attributes
             var refElement = doc.CreateElement("wsse", "Reference", wsseNs);
             refElement.SetAttribute("URI", "#" + bstId);
-            refElement.SetAttribute(
-                "ValueType",
-                "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
-            );
+            refElement.SetAttribute("ValueType",
+                "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3");
+            
             strElement.AppendChild(refElement);
-
             keyInfoElement.AppendChild(strElement);
 
             var keyInfo = new KeyInfo();
@@ -193,6 +196,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds WS-Security header with timestamp and certificate for WS-Security 1.1.1
         /// This is the enhanced method used by the AS4 controller
+        /// Enhanced for Phase4/WSS4J compatibility
         /// </summary>
         public static XElement BuildWsSecurityHeader(
             XElement messaging,
@@ -218,19 +222,32 @@ namespace PeppolSG.API.Service
                 // Build Binary Security Token with certificate
                 var binarySecurityToken = BuildBinarySecurityToken(signingCert, bstId);
 
-                // Create WS-Security header with proper namespace declarations
+                // CRITICAL FIX: Create WS-Security header with proper namespace declarations
+                // for Phase4/WSS4J compatibility
                 var wsSecurityHeader = new XElement(WSSE + "Security",
+                    // Namespace declarations - critical for WSS4J processing
                     new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
-                    new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
+                    new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName), 
                     new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
+                    
+                    // SOAP mustUnderstand attribute
                     new XAttribute(S12 + "mustUnderstand", "1"),
+                    
+                    // Peppol-specific role attribute for AS4
                     new XAttribute(S12 + "role", "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/role/ebms"),
+                    
+                    // CRITICAL: Element ordering must be correct for WSS4J
+                    // 1. Timestamp first (WSS4J expects this order)
                     timestampElement,
+                    
+                    // 2. BinarySecurityToken second
                     binarySecurityToken
+                    
                     // Note: Digital signature will be added later by SignEnvelope method
+                    // and will be placed after BST but before any EncryptedKey elements
                 );
 
-                log.Debug("WS-Security header built successfully");
+                log.Debug("Phase4-compatible WS-Security header built successfully");
                 return wsSecurityHeader;
             }
             catch (Exception ex)

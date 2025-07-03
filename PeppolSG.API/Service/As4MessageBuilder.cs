@@ -324,6 +324,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds WS-Security header with timestamp token for WS-Security 1.1.1 compliance
         /// Used by the AS4 controller for proper message signing
+        /// Enhanced for Phase4/WSS4J compatibility
         /// </summary>
         public XElement BuildWsSecurityHeader(
             XElement messaging,
@@ -357,15 +358,26 @@ namespace PeppolSG.API.Service
                 Convert.ToBase64String(signingCert.RawData)
             );
 
-            // Build WS-Security header
+            // CRITICAL FIX: Build WS-Security header with Phase4/WSS4J compatibility
             var wsSecurityHeader = new XElement(WSSE + "Security",
+                // Namespace declarations - critical for WSS4J processing
                 new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
+                
+                // SOAP mustUnderstand attribute
                 new XAttribute(S12 + "mustUnderstand", "1"),
+                
+                // Peppol-specific role attribute for AS4
                 new XAttribute(S12 + "role", EbmsRole),
+                
+                // CRITICAL: Element ordering must be correct for WSS4J
+                // 1. Timestamp first (WSS4J expects this order)
                 timestampElement,
+                
+                // 2. BinarySecurityToken second
                 binarySecurityToken
+                
                 // Signature will be added later by the signing process
             );
 
@@ -431,6 +443,16 @@ namespace PeppolSG.API.Service
 
         public XElement BuildWsseSecurity(X509Certificate2 cert, out string bstId)
         {
+            // CRITICAL FIX: Generate Timestamp for Phase4/WSS4J compatibility
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+            var timestampId = "TS-" + Guid.NewGuid().ToString("N");
+            var timestampElement = new XElement(WSU + "Timestamp",
+                new XAttribute(WSU + "Id", timestampId),
+                new XElement(WSU + "Created", timestamp),
+                new XElement(WSU + "Expires", 
+                    DateTime.UtcNow.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
+            );
+
             // create BST
             bstId = "X509-" + Guid.NewGuid().ToString("N");
             var bst = new XElement(WSSE + "BinarySecurityToken",
@@ -442,13 +464,21 @@ namespace PeppolSG.API.Service
                 Convert.ToBase64String(cert.RawData)
             );
 
-            // wrap in Security
+            // wrap in Security with Phase4/WSS4J compatible element ordering
             return new XElement(WSSE + "Security",
                 new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
                 new XAttribute(S12 + "mustUnderstand", "1"),
                 new XAttribute(S12 + "role", EbmsRole),
+                
+                // CRITICAL: Element ordering must be correct for WSS4J
+                // 1. Timestamp first (WSS4J expects this order)
+                timestampElement,
+                
+                // 2. BinarySecurityToken second
                 bst,
+                
                 // you'll insert <xenc:EncryptedKey>, <xenc:EncryptedData> and a <ds:Signature> here later
                 new XElement(DS + "Signature")
             );
@@ -549,19 +579,41 @@ namespace PeppolSG.API.Service
                    XElement encryptedDataEl,
                    XElement senderBstEl)
         {
+            // CRITICAL FIX: Generate Timestamp for Phase4/WSS4J compatibility
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+            var timestampId = "TS-" + Guid.NewGuid().ToString("N");
+            var timestampElement = new XElement(WSU + "Timestamp",
+                new XAttribute(WSU + "Id", timestampId),
+                new XElement(WSU + "Created", timestamp),
+                new XElement(WSU + "Expires", 
+                    DateTime.UtcNow.AddMinutes(5).ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
+            );
+
             return new XElement(WSSE + "Security",
                 // namespace declarations
                 new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
+                new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
                 new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
                 new XAttribute(S12 + "mustUnderstand", "1"),
                 new XAttribute(S12 + "role", EbmsRole),
-                // include tokens and encryption elements in order
+                
+                // CRITICAL: Element ordering must be correct for WSS4J
+                // 1. Timestamp first (WSS4J expects this order)
+                timestampElement,
+                
+                // 2. Recipient BST (for encryption)
                 recipientBstEl,
+                
+                // 3. EncryptedKey (referencing recipient BST)
                 encryptedKeyEl,
+                
+                // 4. EncryptedData (referencing attachment)
                 encryptedDataEl,
-                senderBstEl,
-                // placeholder Signature element
-                new XElement(DS + "Signature")
+                
+                // 5. Sender BST (for signing)
+                senderBstEl
+                
+                // placeholder Signature element will be added during signing
             );
         }
 

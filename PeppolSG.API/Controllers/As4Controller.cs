@@ -90,6 +90,7 @@ namespace PeppolSG.API.Controllers
         /// <summary>
         /// Main AS4 endpoint for receiving Peppol messages
         /// Handles UserMessage and SignalMessage according to AS4 profile
+        /// Enhanced for proper encrypted attachment processing
         /// </summary>
         [HttpPost, Route("")]
         public async Task<IHttpActionResult> ReceiveAs4Message()
@@ -147,6 +148,7 @@ namespace PeppolSG.API.Controllers
                 }
 
                 var senderCert = new X509Certificate2(Convert.FromBase64String(endpointMetadata.Certificate));
+                
                 if (!_certificateManager.ValidateCertificate(senderCert))
                 {
                     return await HandleEbms3Error(correlationId, "EBMS:0101", "FailedAuthentication", "Sender certificate is not valid.", userMsg.MessageId, HttpStatusCode.Unauthorized);
@@ -157,7 +159,70 @@ namespace PeppolSG.API.Controllers
                      return await HandleEbms3Error(correlationId, "EBMS:0102", "FailedAuthentication", "Message signature validation failed.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
 
-                log.Info($"[{correlationId}] Message {userMsg.MessageId} successfully validated.");
+                // CRITICAL ENHANCEMENT: Process encrypted attachments
+                log.Info($"[{correlationId}] Processing encrypted attachments for message {userMsg.MessageId}");
+                var attachmentPaths = new List<string>();
+                
+                try
+                {
+                    // Load our private key for decryption
+                    var ourCert = _certificateManager.LoadSigningCertificate();
+                    
+                    // Process each attachment referenced in the UserMessage
+                    foreach (var href in userMsg.PayloadHrefs)
+                    {
+                        var attachmentPart = mimeParts.FirstOrDefault(p => 
+                            p.ContentId == href.Replace("cid:", "").Trim('<', '>'));
+                        
+                        if (attachmentPart != null)
+                        {
+                            log.Info($"[{correlationId}] Found attachment: {attachmentPart.ContentId}, Size: {attachmentPart.ContentBytes?.Length ?? 0} bytes");
+                            
+                            byte[] decryptedBytes;
+                            if (_configService.IsDebugMode())
+                            {
+                                // Debug mode: save encrypted attachment as-is
+                                decryptedBytes = attachmentPart.ContentBytes;
+                                log.Debug($"[{correlationId}] Debug mode: saving encrypted attachment without decryption");
+                            }
+                            else
+                            {
+                                // Production mode: decrypt the attachment
+                                decryptedBytes = DecryptPeppolAttachment(
+                                    attachmentPart.ContentBytes, 
+                                    soapXml, 
+                                    ourCert, 
+                                    href);
+                                log.Info($"[{correlationId}] Successfully decrypted attachment: {attachmentPart.ContentId}");
+                            }
+                            
+                            // Save the decrypted payload
+                            var payloadInfo = new PayloadInfo
+                            {
+                                ContentId = attachmentPart.ContentId,
+                                MimeType = attachmentPart.ContentType,
+                                IsGzip = attachmentPart.ContentType.Contains("gzip") || 
+                                         userMsg.PayloadProperties.ContainsKey("CompressionType") && 
+                                         userMsg.PayloadProperties["CompressionType"] == "application/gzip"
+                            };
+                            
+                            var savedPath = _payloadPersister.Persist(userMsg.MessageId, payloadInfo, decryptedBytes);
+                            attachmentPaths.Add(savedPath);
+                            log.Info($"[{correlationId}] Saved payload to: {savedPath}");
+                        }
+                        else
+                        {
+                            log.Warn($"[{correlationId}] Referenced attachment not found: {href}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log.Error($"[{correlationId}] Attachment processing failed: {ex.Message}", ex);
+                    return await HandleEbms3Error(correlationId, "EBMS:0004", "Error", $"Attachment processing failed: {ex.Message}", userMsg.MessageId, HttpStatusCode.BadRequest);
+                }
+
+                log.Info($"[{correlationId}] Message {userMsg.MessageId} successfully validated and processed. Attachments: {attachmentPaths.Count}");
                 return await GenerateAs4Receipt(userMsg.MessageId, correlationId);
             }
             catch (Exception ex)
@@ -169,38 +234,37 @@ namespace PeppolSG.API.Controllers
 
         /// <summary>
         /// Generates AS4 Receipt (SignalMessage) according to AS4 profile
+        /// Enhanced for Phase4/WSS4J compatibility
         /// </summary>
         private async Task<IHttpActionResult> GenerateAs4Receipt(string refToMessageId, string correlationId)
         {
             log.Info($"[{correlationId}] Generating AS4 Receipt for message: {refToMessageId}");
 
-            var timestamp = DateTime.UtcNow.ToString("o");
-            var messageId = $"receipt-{Guid.NewGuid()}@peppol-ap";
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+            var messageId = $"receipt-{Guid.NewGuid()}@{_configService.GetPeppolDomain()}";
             
             var receiptMessage = _messageBuilder.BuildSignalMessage(timestamp, messageId, refToMessageId);
 
             var signingCert = _certificateManager.LoadSigningCertificate();
-            var bstId = "BST-" + Guid.NewGuid().ToString("N");
             var bodyId = "body-" + Guid.NewGuid().ToString("N");
             var messagingId = "_1";
 
-            var securityHeader = new XElement(XName.Get("Security", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"),
-                new XAttribute(XNamespace.Get("http://www.w3.org/2003/05/soap-envelope") + "mustUnderstand", "1"),
-                new XElement(XName.Get("Timestamp", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"),
-                    new XElement(XName.Get("Created", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"), DateTime.UtcNow.ToString("o")),
-                    new XElement(XName.Get("Expires", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"), DateTime.UtcNow.AddMinutes(5).ToString("o"))
-                ),
-                new XElement(XName.Get("BinarySecurityToken", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"),
-                    new XAttribute(XNamespace.Get("http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd") + "Id", bstId),
-                    new XAttribute("ValueType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"),
-                    new XAttribute("EncodingType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary"),
-                    Convert.ToBase64String(signingCert.GetRawCertData())
-                )
-            );
-
+            // CRITICAL FIX: Use enhanced WS-Security header building for Phase4/WSS4J compatibility
             var messaging = _messageBuilder.BuildMessaging(receiptMessage, messagingId);
-            var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, securityHeader);
+            var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, timestamp, messagingId);
+            var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
 
+            // Extract BST ID for signing
+            var bstElement = wsSecurityHeader.Descendants(XName.Get("BinarySecurityToken", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd")).FirstOrDefault();
+            var bstId = bstElement?.Attribute(XName.Get("Id", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"))?.Value;
+
+            if (string.IsNullOrEmpty(bstId))
+            {
+                log.Error($"[{correlationId}] Failed to extract BST ID from WS-Security header");
+                return InternalServerError(new Exception("Failed to generate valid WS-Security header"));
+            }
+
+            // Sign the envelope
             var certPath = _configService.GetSigningCertificatePath();
             var certPassword = _configService.GetSigningCertificatePassword();
             PeppolAs4Signer.SignEnvelope(soapEnvelope, certPath, certPassword, bstId, messagingId, bodyId);

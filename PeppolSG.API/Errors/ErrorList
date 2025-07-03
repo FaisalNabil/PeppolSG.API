@@ -1,2 +1,52 @@
-Severity	Code	Description	Project	File	Line	Suppression State
-Error (active)	CS1061	'IPeppolConfigurationService' does not contain a definition for 'CompressionType' and no accessible extension method 'CompressionType' accepting a first argument of type 'IPeppolConfigurationService' could be found (are you missing a using directive or an assembly reference?)	PeppolSG.API	D:\Q3 Aurelia\PEPPOL SG MVP\PeppolSG.API\PeppolSG.API\Service\PeppolAs4MessageValidator.cs	424	
+<?xml version="1.0" encoding="UTF-8"?>
+<S12:Envelope xmlns:S12="http://www.w3.org/2003/05/soap-envelope">
+    <S12:Header>
+        <wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" S12:mustUnderstand="true">
+            <wsse:BinarySecurityToken EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary" ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3" wsu:Id="X509-725e8b20-4889-4e44-8719-f0010547a1c8">MIIFwjCCA6qgAwIBAgIQdcvHyRuilYPuwtZo7up+HjANBgkqhkiG9w0BAQsFADBrMQswCQYDVQQGEwJCRTEZMBcGA1UEChMQT3BlblBFUFBPTCBBSVNCTDEWMBQGA1UECxMNRk9SIFRFU1QgT05MWTEpMCcGA1UEAxMgUEVQUE9MIEFDQ0VTUyBQT0lOVCBURVNUIENBIC0gRzIwHhcNMjUwMzA2MDAwMDAwWhcNMjcwMjI0MjM1OTU5WjBPMQswCQYDVQQGEwJCRTETMBEGA1UECgwKT3BlblBlcHBvbDEXMBUGA1UECwwOUEVQUE9MIFRFU1QgQVAxEjAQBgNVBAMMCVBHRDAwMDAwNTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKmr2tbgNaSjUpmv5lxcu7kjnTJEuK11qzf0TlTOBbAXj/HKwPwq/ckEeF2HOVI9hF7rnKwINNqUDjS70cOaqB0lGiIDk1XcGL3fr2lJzlbhvRZ7YWAeEMRzQpKxepxhZXlzsdgxD98dcHPbas5SdbzNMpwL2KSEaaGs9V50hN7un2hkyJ46mM0wbhb3H4ch+pYBZgH7YSBrRf4EP0sARBs5jIPA9VBixuEDKa/qnjTOr/bNbhZUXFKiMMW0Lg1HzJ8jZXKAaNSeYmttFmk0ZEtehNl5uaZhI+jTk9S7f6p/nrKJEvmOOjFNEuVpJprMldpK9OhOBiSxxjazEHR3m98CAwEAAaOCAXwwggF4MAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQDAgOoMBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMCMB0GA1UdDgQWBBTyRxjum21BsLnMqObPLNnaHQ8opTBdBgNVHR8EVjBUMFKgUKBOhkxodHRwOi8vcGtpLWNybC5zeW1hdXRoLmNvbS9jYV82YTkzNzczNGEzOTNhMDgwNWJmMzNjZGE4YjMzMTA5My9MYXRlc3RDUkwuY3JsMDcGCCsGAQUFBwEBBCswKTAnBggrBgEFBQcwAYYbaHR0cDovL3BraS1vY3NwLnN5bWF1dGguY29tMB8GA1UdIwQYMBaAFGtvS7bxN7orPH8Yzborsrl8KjfrMC0GCmCGSAGG+EUBEAMEHzAdBhNghkgBhvhFARABAgMBAYGpkOEDFgY5NTc2MDgwOQYKYIZIAYb4RQEQBQQrMCkCAQAWJGFIUjBjSE02THk5d2Eya3RjbUV1YzNsdFlYVjBhQzVqYjIwPTANBgkqhkiG9w0BAQsFAAOCAgEAg1iaEwiUjcEyFqq0g2/BKUlTN9zmCzfBAr7FOFnGRexykQK4Bk5dSmwRhhPUiLwpUr2oFCY+61tDu/uzIS/J07WzqLgL0O3yECimsXvAV7JZMbUnswBneufgNsgipi5hD7VNxrStP8wh8n8wZgN6YDDUq6a7ya6/RWMYJclENcDwiE2gQ8wOKgcT/Z2kKdywJLPSiuUzj2VjyKbWxwCOPyzdSPlL+AnyawjzSllkLL5ao8zXGfzXDkIIxo0YaPebDwvlrqkCByxdH86kxKYUSvoSCNQwLmhWrLeZp981/LKYBEZBFem9k6iQrF0phvw7KnkKooxomIDnx7nKlTvCKrKYsSdtephG6ru7U6iVoQj98cdGD06aM4rBIY/kayXak+DE2choEWllLIvB1VEnRFU0PMW0E+vpgbB7anzzr7THzREjDOa6kIGcJdNC/FlTuFA6s2pJDBt6eK0RHIZqJsC7fN8+wA49RUgg6CCBwI9zyweaaZSj43mzYTqNYlEd7sJSglgc05ZdQqxmfPLSh1mhK4ghSb7Rxj7d9RSETr6tb32nVHYKP/HCUObREe0uf6RwwsohjXE7dV9XQWypLEYft8Y97Dn9uvbKkk6QopexGQjkqC4O12eMsKD+Nub/HmynOflc0JHnNU28dZLLuUrsYC1/HvimLnYVqT7BsHg=</wsse:BinarySecurityToken>
+            <ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="SIG-07fd1039-bcc3-488a-be54-642b4759c40b">
+                <ds:SignedInfo>
+                    <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#">
+                        <ec:InclusiveNamespaces xmlns:ec="http://www.w3.org/2001/10/xml-exc-c14n#" PrefixList="S12"/>
+                    </ds:CanonicalizationMethod>
+                    <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+                    <ds:Reference URI="#phase4-msg-393b0c64-6599-4f5a-b220-246c023249d3">
+                        <ds:Transforms>
+                            <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#">
+                                <ec:InclusiveNamespaces xmlns:ec="http://www.w3.org/2001/10/xml-exc-c14n#" PrefixList="S12"/>
+                            </ds:Transform>
+                        </ds:Transforms>
+                        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+                        <ds:DigestValue>tusTC9aN493cgO5yRYF098SvqhYRqrUSy6Ds1akqZH0=</ds:DigestValue>
+                    </ds:Reference>
+                    <ds:Reference URI="#id-2e7422dd-761b-4c40-9a7c-0a9f4d2e1b1d">
+                        <ds:Transforms>
+                            <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>
+                        </ds:Transforms>
+                        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+                        <ds:DigestValue>RPEfcBCvO8lgdwsUPv3rjcmjdUmi8GKHmMf6uw/tFQw=</ds:DigestValue>
+                    </ds:Reference>
+                </ds:SignedInfo>
+                <ds:SignatureValue>g4lcTWfp9xTSQL+XRtr1FNSxk2f94412t7Z8UcGs51q+0DndBXzhUtReG5ehq2Tk9eDPBBWkRPE0GxhtG9TfcG3/L3gq0T8YcyXhnXzUfRopKDqE8C0oL4iflhU2dBuizUVBPer5dUMJz8dgPRQMY8i/fC+hlnVjm8gm4TMPlfl1oELcaYAjt1E6BfYktjlTzidXrN0crWPLpgqC7RjkCQh4frM9iM1dNOPikHE+vivNHNyZDAgeM8pNgqsBoGtZGo3xcVzbc45EH1yY2cNeXn1tFgDnJjvLqZpGMhFEsilDK8OC63hDOaTB8HLNjT6mUdx0s/3ZM0M/zNRI36NM1w==</ds:SignatureValue>
+                <ds:KeyInfo Id="KI-102c0c50-1900-4bf1-a33a-84af37516f1a">
+                    <wsse:SecurityTokenReference wsu:Id="STR-1e508a50-9956-42fa-b61c-b5d3e72f830d">
+                        <wsse:Reference URI="#X509-725e8b20-4889-4e44-8719-f0010547a1c8" ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"/>
+                    </wsse:SecurityTokenReference>
+                </ds:KeyInfo>
+            </ds:Signature>
+        </wsse:Security>
+        <eb:Messaging xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:eb="http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/" xmlns:ebbp="http://docs.oasis-open.org/ebxml-bp/ebbp-signals-2.0" xmlns:ns2="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns3="http://www.w3.org/2003/05/soap-envelope" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:xlink="http://www.w3.org/1999/xlink" wsu:Id="phase4-msg-393b0c64-6599-4f5a-b220-246c023249d3">
+            <eb:SignalMessage>
+                <eb:MessageInfo>
+                    <eb:Timestamp>2025-07-03T02:40:12.376Z</eb:Timestamp>
+                    <eb:MessageId>1faa93d3-19ff-49a8-986d-54cbd859eed5@phase4.openpeppol.playground</eb:MessageId>
+                    <eb:RefToMessageId>52509ca9-df14-445c-a1bc-a644a48536b1@accorq3einvoiceapi.q3f.cloud</eb:RefToMessageId>
+                </eb:MessageInfo>
+                <eb:Error category="Content" errorCode="EBMS:0004" refToMessageInError="52509ca9-df14-445c-a1bc-a644a48536b1@accorq3einvoiceapi.q3f.cloud" severity="failure" shortDescription="Other">
+                    <eb:Description xml:lang="en">An undefined error occurred.</eb:Description>
+                    <eb:ErrorDetail>Error processing SOAP header element {http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd}Security with processor com.helger.phase4.incoming.soap.SoapHeaderElementProcessorWSS4J@34faab1a: Technical details: java.lang.NullPointerException - Cannot invoke "org.apache.wss4j.dom.handler.WSHandlerResult.getResults()" because "&lt;local13&gt;" is null</eb:ErrorDetail>
+                </eb:Error>
+            </eb:SignalMessage>
+        </eb:Messaging>
+    </S12:Header>
+    <S12:Body xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" wsu:Id="id-2e7422dd-761b-4c40-9a7c-0a9f4d2e1b1d"/>
+</S12:Envelope>

@@ -31,6 +31,7 @@ namespace PeppolSG.API.Service
         public string Action { get; set; }
         public List<string> PayloadHrefs { get; set; }
         public Dictionary<string, string> Properties { get; set; }
+        public Dictionary<string, string> PayloadProperties { get; set; }
     }
 
     public static class SOAPHeaderParser
@@ -210,6 +211,30 @@ namespace PeppolSG.API.Service
                 .Where(h => h != null)
                 .ToList() ?? new List<string>();
 
+            // CRITICAL ENHANCEMENT: Extract payload properties for attachment processing
+            var payloadProperties = new Dictionary<string, string>();
+            if (payloadInfo != null)
+            {
+                var partInfos = payloadInfo.Elements().Where(e => e.Name.LocalName == "PartInfo");
+                foreach (var partInfo in partInfos)
+                {
+                    var partProperties = partInfo.Elements().FirstOrDefault(e => e.Name.LocalName == "PartProperties");
+                    if (partProperties != null)
+                    {
+                        var properties = partProperties.Elements().Where(e => e.Name.LocalName == "Property");
+                        foreach (var property in properties)
+                        {
+                            var name = property.Attribute("name")?.Value;
+                            var value = property.Value;
+                            if (!string.IsNullOrEmpty(name))
+                            {
+                                payloadProperties[name] = value;
+                            }
+                        }
+                    }
+                }
+            }
+
             return new UserMessage
             {
                 MessageId = messageInfo?.Elements().FirstOrDefault(e => e.Name.LocalName == "MessageId")?.Value,
@@ -222,7 +247,8 @@ namespace PeppolSG.API.Service
                 FromPartyIdType = fromPartyIdType,
                 ToPartyIdType = toPartyIdType,
                 PayloadHrefs = payloadHrefs,
-                Properties = properties ?? new Dictionary<string, string>()
+                Properties = properties ?? new Dictionary<string, string>(),
+                PayloadProperties = payloadProperties
             };
         }
     }
