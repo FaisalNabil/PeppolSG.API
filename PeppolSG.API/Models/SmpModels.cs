@@ -38,7 +38,23 @@ namespace PeppolSG.API.Models
         [XmlAttribute("href")]
         public string Href { get; set; }
     }
-    
+
+    /// <summary>
+    /// Represents the complete ServiceMetadata response from an SMP server
+    /// as specified in the BUSDOX SMP specification.
+    /// </summary>
+    [XmlRoot("SignedServiceMetadata", Namespace = "http://busdox.org/serviceMetadata/publishing/1.0/")]
+    public class SmpSignedServiceMetadata
+    {
+        [XmlElement("ServiceMetadata")]
+        public SmpServiceMetadata ServiceMetadata { get; set; }
+
+        public SmpSignedServiceMetadata()
+        {
+            ServiceMetadata = new SmpServiceMetadata();
+        }
+    }
+
     /// <summary>
     /// Represents the complete ServiceMetadata response from an SMP server
     /// as specified in the BUSDOX SMP specification.

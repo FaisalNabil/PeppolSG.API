@@ -39,7 +39,16 @@ namespace PeppolSG.API.Service
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "PeppolSG-AccessPoint/1.0");
             _httpClient.Timeout = TimeSpan.FromSeconds(30); // 30-second timeout
         }
-
+        public string BuildEdnSmpServiceMetadataUrl(string participantScheme, string participantId, string documentTypeId)
+        {
+            // Compose: scheme::id
+            var fullPid = $"{participantScheme}::{participantId}";
+            var encodedPid = HttpUtility.UrlEncode(fullPid);
+            var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
+            var url = $"http://smp-test.peppol.org/{encodedPid}/services/{encodedDocType}";
+            //log.Info($"Constructed Peppol EDN SMP ServiceMetadata URL: {url}");
+            return url;
+        }
         /// <summary>
         /// Main method to look up endpoint metadata for a Peppol participant.
         /// Caches results for performance.
@@ -61,16 +70,18 @@ namespace PeppolSG.API.Service
             log.Info($"Performing live SMP lookup for {participantId}");
 
             // Perform SMP lookup
-            var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId, processId);
-            var serviceMetadata = await GetServiceMetadata(smpUrl);
+            //var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId, processId);
+            var smpUrl = BuildEdnSmpServiceMetadataUrl(participantScheme, participantId, documentTypeId);
 
-            if (serviceMetadata == null || serviceMetadata.ServiceInformation == null)
+            var signedServiceMetadata = await GetSignedServiceMetadata(smpUrl);
+
+            if (signedServiceMetadata == null || signedServiceMetadata.ServiceMetadata == null || signedServiceMetadata.ServiceMetadata.ServiceInformation == null)
             {
                 throw new InvalidOperationException($"No valid ServiceInformation found at SMP URL: {smpUrl}");
             }
 
             // Find the correct endpoint for the given process
-            var endpoint = FindPeppolAs4Endpoint(serviceMetadata, processId);
+            var endpoint = FindPeppolAs4Endpoint(signedServiceMetadata.ServiceMetadata, processId);
 
             if (endpoint == null)
             {
@@ -115,7 +126,7 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Retrieves and deserializes ServiceMetadata from the SMP server.
         /// </summary>
-        private async Task<SmpServiceMetadata> GetServiceMetadata(string smpUrl)
+        private async Task<SmpSignedServiceMetadata> GetSignedServiceMetadata(string smpUrl)
         {
             try
             {
@@ -125,10 +136,10 @@ namespace PeppolSG.API.Service
                 var xmlContent = await response.Content.ReadAsStringAsync();
                 
                 // Deserialize XML into SmpServiceMetadata object
-                var serializer = new XmlSerializer(typeof(SmpServiceMetadata));
+                var serializer = new XmlSerializer(typeof(SmpSignedServiceMetadata));
                 using (var reader = new StringReader(xmlContent))
                 {
-                    return (SmpServiceMetadata)serializer.Deserialize(reader);
+                    return (SmpSignedServiceMetadata)serializer.Deserialize(reader);
                 }
             }
             catch (HttpRequestException ex)
