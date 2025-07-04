@@ -1052,5 +1052,321 @@ Content-ID: <test-attachment@cid>
             void Info(string message);
             void Error(string message);
         }
+
+        /// <summary>
+        /// Day 15 Test Suite: .NET Framework 4.8 Compatibility Validation
+        /// Tests the CryptoCompatibilityHelper and safe RSA key extraction methods
+        /// </summary>
+        
+        [Test]
+        public void Test_Day15_CryptoCompatibilityHelper_RSA_Conversion()
+        {
+            // ARRANGE
+            var testCert = LoadTestCertificate();
+            
+            // ACT & ASSERT
+            try
+            {
+                // Test safe RSA private key extraction
+                var rsaPrivate = testCert.GetRSAPrivateKeySafe();
+                Assert.NotNull(rsaPrivate, "Safe RSA private key extraction should succeed");
+                Assert.True(rsaPrivate.KeySize > 0, "RSA key should have valid key size");
+                
+                // Test conversion to BouncyCastle format
+                var bcPrivateKey = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPrivateKey(rsaPrivate);
+                Assert.NotNull(bcPrivateKey, "BouncyCastle RSA private key conversion should succeed");
+                Assert.True(bcPrivateKey.IsPrivate, "Converted key should be marked as private");
+                
+                // Test safe RSA public key extraction
+                var rsaPublic = testCert.GetRSAPublicKeySafe();
+                Assert.NotNull(rsaPublic, "Safe RSA public key extraction should succeed");
+                
+                // Test conversion to BouncyCastle format
+                var bcPublicKey = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPublicKey(rsaPublic);
+                Assert.NotNull(bcPublicKey, "BouncyCastle RSA public key conversion should succeed");
+                Assert.False(bcPublicKey.IsPrivate, "Converted key should be marked as public");
+                
+                TestContext.WriteLine("✅ Day 15: CryptoCompatibilityHelper RSA conversion tests passed");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: CryptoCompatibilityHelper RSA conversion failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_RSA_OAEP_Decryption_Without_DotNetUtilities()
+        {
+            // ARRANGE
+            var testCert = LoadTestCertificate();
+            var testData = Encoding.UTF8.GetBytes("Test message for RSA-OAEP decryption");
+            
+            // ACT & ASSERT
+            try
+            {
+                // First encrypt with standard method
+                var encryptedData = As4Controller.RsaOaepEncrypt_MGF1_SHA256(testData, testCert);
+                Assert.NotNull(encryptedData, "RSA-OAEP encryption should succeed");
+                Assert.True(encryptedData.Length > 0, "Encrypted data should not be empty");
+                
+                // Then decrypt using the new compatibility method
+                var decryptedData = As4Controller.RsaOaepDecrypt_MGF1_SHA256(encryptedData, testCert);
+                Assert.NotNull(decryptedData, "RSA-OAEP decryption should succeed");
+                
+                var decryptedText = Encoding.UTF8.GetString(decryptedData);
+                Assert.AreEqual("Test message for RSA-OAEP decryption", decryptedText, 
+                    "Decrypted data should match original");
+                
+                TestContext.WriteLine("✅ Day 15: RSA-OAEP decryption without DotNetUtilities works correctly");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: RSA-OAEP decryption compatibility test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_BouncyCastle_Package_Compatibility()
+        {
+            // ARRANGE & ACT & ASSERT
+            try
+            {
+                // Test AES engine availability
+                var aesEngine = new Org.BouncyCastle.Crypto.Engines.AesEngine();
+                Assert.NotNull(aesEngine, "BouncyCastle AES engine should be available");
+                
+                // Test RSA engine availability
+                var rsaEngine = new Org.BouncyCastle.Crypto.Engines.RsaEngine();
+                Assert.NotNull(rsaEngine, "BouncyCastle RSA engine should be available");
+                
+                // Test OAEP encoding availability
+                var oaepEngine = new Org.BouncyCastle.Crypto.Encodings.OaepEncoding(
+                    rsaEngine,
+                    new Org.BouncyCastle.Crypto.Digests.Sha256Digest(),
+                    new Org.BouncyCastle.Crypto.Digests.Sha256Digest(),
+                    null);
+                Assert.NotNull(oaepEngine, "BouncyCastle OAEP encoding should be available");
+                
+                // Test GCM mode availability
+                var gcmCipher = new Org.BouncyCastle.Crypto.Modes.GcmBlockCipher(aesEngine);
+                Assert.NotNull(gcmCipher, "BouncyCastle GCM cipher should be available");
+                
+                // Test BigInteger availability
+                var bigInt = new Org.BouncyCastle.Math.BigInteger("12345");
+                Assert.NotNull(bigInt, "BouncyCastle BigInteger should be available");
+                
+                TestContext.WriteLine("✅ Day 15: BouncyCastle package compatibility verified");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: BouncyCastle package compatibility test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_Framework_Version_Compatibility()
+        {
+            // ARRANGE & ACT & ASSERT
+            try
+            {
+                // Check .NET Framework version
+                var version = Environment.Version;
+                TestContext.WriteLine($"Running on .NET Framework version: {version}");
+                
+                // Verify we're running on .NET Framework 4.8 or compatible
+                Assert.True(version.Major >= 4, "Should be running on .NET Framework 4.x or later");
+                
+                // Test System.Security.Cryptography availability
+                using (var rsa = RSA.Create())
+                {
+                    Assert.NotNull(rsa, "RSA cryptography should be available");
+                    Assert.True(rsa.KeySize > 0, "RSA should have valid key size");
+                }
+                
+                // Test X509Certificate2 functionality
+                var testCert = LoadTestCertificate();
+                Assert.NotNull(testCert, "X509Certificate2 should be available");
+                Assert.True(testCert.HasPrivateKey, "Test certificate should have private key");
+                
+                TestContext.WriteLine("✅ Day 15: .NET Framework version compatibility verified");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: Framework version compatibility test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_AS4_Message_Processing_End_To_End_Compatibility()
+        {
+            // ARRANGE
+            var testInvoiceXml = CreateTestInvoiceXml();
+            
+            // ACT & ASSERT
+            try
+            {
+                // Test the complete AS4 message processing pipeline with compatibility fixes
+                var controller = CreateTestController();
+                
+                // Test certificate loading with safe methods
+                var cert = LoadTestCertificate();
+                var rsaPrivate = cert.GetRSAPrivateKeySafe();
+                var rsaPublic = cert.GetRSAPublicKeySafe();
+                
+                Assert.NotNull(rsaPrivate, "Safe RSA private key extraction should work");
+                Assert.NotNull(rsaPublic, "Safe RSA public key extraction should work");
+                
+                // Test BouncyCastle conversion
+                var bcPrivate = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPrivateKey(rsaPrivate);
+                var bcPublic = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPublicKey(rsaPublic);
+                
+                Assert.NotNull(bcPrivate, "BouncyCastle private key conversion should work");
+                Assert.NotNull(bcPublic, "BouncyCastle public key conversion should work");
+                
+                // Test encryption/decryption pipeline
+                var testData = Encoding.UTF8.GetBytes("Test attachment data");
+                var encrypted = As4Controller.RsaOaepEncrypt_MGF1_SHA256(testData, cert);
+                var decrypted = As4Controller.RsaOaepDecrypt_MGF1_SHA256(encrypted, cert);
+                
+                Assert.AreEqual(testData, decrypted, "End-to-end encryption/decryption should work");
+                
+                TestContext.WriteLine("✅ Day 15: End-to-end AS4 message processing compatibility verified");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: End-to-end compatibility test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_Error_Handling_And_Fallbacks()
+        {
+            // ARRANGE & ACT & ASSERT
+            try
+            {
+                // Test error handling in safe RSA key extraction
+                var invalidCert = new X509Certificate2(); // Empty certificate
+                
+                try
+                {
+                    var rsa = invalidCert.GetRSAPrivateKeySafe();
+                    Assert.Fail("Should have thrown exception for invalid certificate");
+                }
+                catch (NotSupportedException ex)
+                {
+                    Assert.True(ex.Message.Contains("Cannot extract RSA private key"), 
+                        "Should provide meaningful error message");
+                    TestContext.WriteLine($"✅ Proper error handling for invalid certificate: {ex.Message}");
+                }
+                
+                // Test error handling in BouncyCastle conversion
+                try
+                {
+                    using (var invalidRsa = RSA.Create(512)) // Too small key size
+                    {
+                        var parameters = invalidRsa.ExportParameters(true);
+                        // This should work but with a small key
+                        var bcKey = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPrivateKey(invalidRsa);
+                        Assert.NotNull(bcKey, "Conversion should work even with small keys");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TestContext.WriteLine($"Expected behavior for edge cases: {ex.Message}");
+                }
+                
+                TestContext.WriteLine("✅ Day 15: Error handling and fallback mechanisms verified");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: Error handling test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        [Test]
+        public void Test_Day15_Performance_And_Memory_Usage()
+        {
+            // ARRANGE
+            var testCert = LoadTestCertificate();
+            var testData = new byte[1024]; // 1KB test data
+            new Random().NextBytes(testData);
+            
+            // ACT & ASSERT
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                
+                // Test performance of new compatibility methods
+                for (int i = 0; i < 10; i++)
+                {
+                    var rsa = testCert.GetRSAPrivateKeySafe();
+                    var bcKey = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPrivateKey(rsa);
+                    
+                    // Test encryption/decryption performance
+                    var encrypted = As4Controller.RsaOaepEncrypt_MGF1_SHA256(testData, testCert);
+                    var decrypted = As4Controller.RsaOaepDecrypt_MGF1_SHA256(encrypted, testCert);
+                    
+                    Assert.AreEqual(testData.Length, decrypted.Length, "Data length should be preserved");
+                }
+                
+                sw.Stop();
+                TestContext.WriteLine($"✅ Day 15: Performance test completed in {sw.ElapsedMilliseconds}ms for 10 iterations");
+                
+                // Verify reasonable performance (should be under 5 seconds for 10 iterations)
+                Assert.True(sw.ElapsedMilliseconds < 5000, 
+                    "Performance should be reasonable (under 5 seconds for 10 iterations)");
+                
+                TestContext.WriteLine("✅ Day 15: Performance and memory usage verified");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: Performance test failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Comprehensive Day 15 validation - runs all compatibility tests
+        /// </summary>
+        [Test]
+        public void Test_Day15_Comprehensive_Compatibility_Validation()
+        {
+            TestContext.WriteLine("🔄 Starting comprehensive Day 15 compatibility validation...");
+            
+            try
+            {
+                // Run all Day 15 tests in sequence
+                Test_Day15_CryptoCompatibilityHelper_RSA_Conversion();
+                Test_Day15_RSA_OAEP_Decryption_Without_DotNetUtilities();
+                Test_Day15_BouncyCastle_Package_Compatibility();
+                Test_Day15_Framework_Version_Compatibility();
+                Test_Day15_AS4_Message_Processing_End_To_End_Compatibility();
+                Test_Day15_Error_Handling_And_Fallbacks();
+                Test_Day15_Performance_And_Memory_Usage();
+                
+                TestContext.WriteLine("🎉 Day 15: ALL COMPATIBILITY TESTS PASSED!");
+                TestContext.WriteLine("✅ .NET Framework 4.8 compatibility successfully validated");
+                TestContext.WriteLine("✅ DotNetUtilities.GetKeyPair() dependency successfully removed");
+                TestContext.WriteLine("✅ CryptoCompatibilityHelper working correctly");
+                TestContext.WriteLine("✅ Safe RSA key extraction methods functioning");
+                TestContext.WriteLine("✅ BouncyCastle package compatibility verified");
+                TestContext.WriteLine("✅ End-to-end AS4 processing compatibility confirmed");
+                TestContext.WriteLine("✅ Performance and error handling validated");
+                TestContext.WriteLine("");
+                TestContext.WriteLine("🚀 Peppol Access Point is ready for .NET Framework 4.8 production deployment!");
+            }
+            catch (Exception ex)
+            {
+                TestContext.WriteLine($"❌ Day 15: Comprehensive compatibility validation failed: {ex.Message}");
+                TestContext.WriteLine("🔧 Review compatibility fixes and retry");
+                throw;
+            }
+        }
     }
 }

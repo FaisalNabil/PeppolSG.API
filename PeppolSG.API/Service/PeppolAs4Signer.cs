@@ -9,9 +9,115 @@ using System.Security.Cryptography;
 using System.Web;
 using System.Xml.Linq;
 using System.Xml;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Math;
 
 namespace PeppolSG.API.Service
 {
+    /// <summary>
+    /// Crypto compatibility helper for .NET Framework 4.8 compatibility
+    /// Provides BouncyCastle key conversion without DotNetUtilities dependency
+    /// </summary>
+    public static class CryptoCompatibilityHelper
+    {
+        private static readonly log4net.ILog log = log4net.LogManager.GetLogger(typeof(CryptoCompatibilityHelper));
+
+        /// <summary>
+        /// Converts .NET RSA private key to BouncyCastle RsaPrivateCrtKeyParameters
+        /// Compatible with .NET Framework 4.8 without DotNetUtilities dependency
+        /// </summary>
+        public static RsaPrivateCrtKeyParameters ConvertToBouncyCastleRsaPrivateKey(RSA rsa)
+        {
+            try
+            {
+                var parameters = rsa.ExportParameters(true);
+                
+                return new RsaPrivateCrtKeyParameters(
+                    new BigInteger(1, parameters.Modulus),
+                    new BigInteger(1, parameters.Exponent),
+                    new BigInteger(1, parameters.D),
+                    new BigInteger(1, parameters.P),
+                    new BigInteger(1, parameters.Q),
+                    new BigInteger(1, parameters.DP),
+                    new BigInteger(1, parameters.DQ),
+                    new BigInteger(1, parameters.InverseQ));
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Failed to convert RSA private key to BouncyCastle format: {ex.Message}", ex);
+                throw new InvalidOperationException("RSA private key conversion failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// Converts .NET RSA public key to BouncyCastle RsaKeyParameters
+        /// Compatible with .NET Framework 4.8
+        /// </summary>
+        public static RsaKeyParameters ConvertToBouncyCastleRsaPublicKey(RSA rsa)
+        {
+            try
+            {
+                var parameters = rsa.ExportParameters(false);
+                
+                return new RsaKeyParameters(
+                    false, // isPrivate = false
+                    new BigInteger(1, parameters.Modulus),
+                    new BigInteger(1, parameters.Exponent));
+            }
+            catch (Exception ex)
+            {
+                log.Error($"Failed to convert RSA public key to BouncyCastle format: {ex.Message}", ex);
+                throw new InvalidOperationException("RSA public key conversion failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// Safe wrapper for GetRSAPrivateKey with fallback for .NET Framework 4.8
+        /// </summary>
+        public static RSA GetRSAPrivateKeySafe(this X509Certificate2 cert)
+        {
+            try
+            {
+                return cert.GetRSAPrivateKey();
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"GetRSAPrivateKey() failed, trying fallback: {ex.Message}");
+                
+                // Fallback for older .NET Framework versions
+                if (cert.PrivateKey is RSA rsa)
+                {
+                    return rsa;
+                }
+                
+                throw new NotSupportedException($"Cannot extract RSA private key from certificate: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Safe wrapper for GetRSAPublicKey with fallback for .NET Framework 4.8
+        /// </summary>
+        public static RSA GetRSAPublicKeySafe(this X509Certificate2 cert)
+        {
+            try
+            {
+                return cert.GetRSAPublicKey();
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"GetRSAPublicKey() failed, trying fallback: {ex.Message}");
+                
+                // Fallback for older .NET Framework versions
+                if (cert.PublicKey.Key is RSA rsa)
+                {
+                    return rsa;
+                }
+                
+                throw new NotSupportedException($"Cannot extract RSA public key from certificate: {ex.Message}", ex);
+            }
+        }
+    }
+
     /// <summary>
     /// Enhanced Peppol AS4 Signer for WS-Security 1.1.1 compliance
     /// Implements eDelivery AS4 Profile v1.1.0 signature requirements
@@ -32,7 +138,7 @@ namespace PeppolSG.API.Service
 
         /// <summary>
         /// Sign the SOAP envelope, encrypting an attachment if requested.
-        /// Enhanced version without dangerous reflection usage.
+        /// Enhanced version with .NET Framework 4.8 compatibility.
         /// </summary>
         public static void SignEnvelope(
             XDocument envelopeXml,
@@ -55,10 +161,10 @@ namespace PeppolSG.API.Service
             using (var reader = envelopeXml.CreateReader())
                 xmlDoc.Load(reader);
 
-            // 2) SignedXml setup
+            // 2) SignedXml setup with safe RSA key extraction
             var sxml = new SignedXmlWithId(xmlDoc)
             {
-                SigningKey = cert.GetRSAPrivateKey()
+                SigningKey = cert.GetRSAPrivateKeySafe() // Use safe wrapper
             };
             sxml.SignedInfo.CanonicalizationMethod = SignedXml.XmlDsigExcC14NTransformUrl;
             sxml.SignedInfo.SignatureMethod = SignedXml.XmlDsigRSASHA256Url;
@@ -74,22 +180,6 @@ namespace PeppolSG.API.Service
                 var attachRef = CreateAttachmentReference(attachmentCid, encryptedAttachment);
                 sxml.AddReference(attachRef);
             }
-            //if (!string.IsNullOrEmpty(attachmentCid) && encryptedAttachment != null)
-            //{
-            //    var attachRef = new Reference(attachmentCid)
-            //    {
-            //        DigestMethod = SignedXml.XmlDsigSHA256Url
-            //    };
-            //    attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
-
-            //    // bind the in-memory encrypted bytes to that Reference
-            //    var fieldData = typeof(Reference).GetField("m_refTarget", BindingFlags.NonPublic | BindingFlags.Instance);
-            //    var fieldType = typeof(Reference).GetField("m_refTargetType", BindingFlags.NonPublic | BindingFlags.Instance);
-            //    fieldData.SetValue(attachRef, new MemoryStream(encryptedAttachment));
-            //    fieldType.SetValue(attachRef, 0); // stream
-
-            //    sxml.AddReference(attachRef);
-            //}
 
             // 5) KeyInfo → wsse:SecurityTokenReference
             sxml.KeyInfo = BuildKeyInfo(bstId);

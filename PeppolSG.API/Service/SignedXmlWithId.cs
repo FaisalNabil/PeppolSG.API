@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Security.Cryptography.Xml;
 using System.Web;
 using System.Xml;
@@ -18,9 +19,9 @@ namespace PeppolSG.API.Service
             try
             {
                 // Register the AttachmentSignatureTransform for SwA Profile compatibility
-                SignedXml.AddAlgorithm(
-                    AttachmentSignatureTransform.SwAProfileUrl,
-                    typeof(AttachmentSignatureTransform));
+                CryptoConfig.AddAlgorithm(
+                    typeof(AttachmentSignatureTransform),
+                    AttachmentSignatureTransform.SwAProfileUrl);
                 
                 log.Info("Successfully registered AttachmentSignatureTransform for SwA Profile support");
             }

@@ -25,6 +25,7 @@ using System.IO.Compression;
 using System.Runtime.Remoting.Messaging;
 using PeppolSG.API.Service.Interfaces;
 using LogManager = log4net.LogManager;
+using static PeppolSG.API.Service.CryptoCompatibilityHelper;
 
 namespace PeppolSG.API.Controllers
 {
@@ -377,7 +378,7 @@ namespace PeppolSG.API.Controllers
 
                 // Create SignedXmlWithId for enhanced ID resolution
                 var signedXml = new SignedXmlWithId(xmlDoc);
-                signedXml.SigningKey = cert.GetRSAPrivateKey();
+                signedXml.SigningKey = cert.GetRSAPrivateKeySafe(); // Use safe wrapper
 
                 // Create simplified reference list for receipts (avoid problematic references)
                 var reference = new Reference("#" + bodyId);
@@ -869,9 +870,9 @@ namespace PeppolSG.API.Controllers
         }
         public static byte[] RsaOaepDecrypt_MGF1_SHA256(byte[] cipherText, X509Certificate2 cert)
         {
-            var bcCert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(cert.RawData);
-            // Get the private key from your .p12/.pfx as BouncyCastle key
-            var rsaPrivate = DotNetUtilities.GetKeyPair(cert.GetRSAPrivateKey()).Private;
+            // CRITICAL FIX: Use CryptoCompatibilityHelper instead of DotNetUtilities for .NET Framework 4.8 compatibility
+            var rsa = cert.GetRSAPrivateKeySafe(); // Use safe wrapper
+            var rsaPrivate = CryptoCompatibilityHelper.ConvertToBouncyCastleRsaPrivateKey(rsa);
 
             var engine = new OaepEncoding(
                 new RsaEngine(),
@@ -996,7 +997,7 @@ namespace PeppolSG.API.Controllers
             // 6) Finally, let SignedXmlWithId do its work
             var signedXml = new SignedXmlWithId(xmlDoc)
             {
-                SigningKey = senderCert.GetRSAPublicKey()
+                SigningKey = senderCert.GetRSAPublicKeySafe() // Use safe wrapper
             };
             signedXml.LoadXml(sigElem);
             return signedXml.CheckSignature(senderCert, true);
@@ -1108,7 +1109,7 @@ namespace PeppolSG.API.Controllers
                 log.Debug($"Key encryption algorithm: {keyEncAlg}");
 
                 byte[] aesKey;
-                var rsa = myCert.GetRSAPrivateKey();
+                var rsa = myCert.GetRSAPrivateKeySafe(); // Use safe wrapper
                 if (keyEncAlg == "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p" // OAEP w/ SHA-1
                     || string.IsNullOrEmpty(keyEncAlg)) // default fallback
                 {
