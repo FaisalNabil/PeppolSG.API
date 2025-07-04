@@ -611,9 +611,9 @@ namespace PeppolSG.API.Service
                 encryptedDataEl,
                 
                 // 5. Sender BST (for signing)
-                senderBstEl
-                
-                // placeholder Signature element will be added during signing
+                senderBstEl,
+                //IMPORTANT: If signature is not added, later shows error
+                new XElement(DS + "Signature")
             );
         }
 

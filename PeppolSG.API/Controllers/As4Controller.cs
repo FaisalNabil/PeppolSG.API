@@ -141,7 +141,9 @@ namespace PeppolSG.API.Controllers
                 }
 
                 var userMsg = SOAPHeaderParser.GetUserMessage(soapXml);
-                var endpointMetadata = await _smkSmpLookup.LookupEndpointMetadata(userMsg.FromPartyId, userMsg.FromPartyIdType, userMsg.Service, userMsg.Action);
+                //IMPORTANT: need to get original sender from UserMessage properties and then use its value to look up the endpoint metadata
+                var originalSender = userMsg.Properties.FirstOrDefault(p => p.Name == "originalSender");
+                var endpointMetadata = await _smkSmpLookup.LookupEndpointMetadata(originalSender.Value, originalSender.Type, userMsg.Action, userMsg.Service);
                 if (endpointMetadata == null)
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0010", "ProcessingModeMismatch", "SMP lookup failed for sender.", userMsg.MessageId, HttpStatusCode.BadRequest);
@@ -153,7 +155,8 @@ namespace PeppolSG.API.Controllers
                 {
                     return await HandleEbms3Error(correlationId, "EBMS:0101", "FailedAuthentication", "Sender certificate is not valid.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
-                
+
+                //IMPORTANT: Verify the message signature using the sender's certificate (not working)
                 if (!PeppolAs4Signer.VerifyMessageSignature(soapXml, senderCert))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0102", "FailedAuthentication", "Message signature validation failed.", userMsg.MessageId, HttpStatusCode.Unauthorized);

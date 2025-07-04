@@ -30,8 +30,14 @@ namespace PeppolSG.API.Service
         public string Service { get; set; }
         public string Action { get; set; }
         public List<string> PayloadHrefs { get; set; }
-        public Dictionary<string, string> Properties { get; set; }
+        public List<EbmsProperty> Properties { get; set; }
         public Dictionary<string, string> PayloadProperties { get; set; }
+    }
+    public class EbmsProperty
+    {
+        public string Name { get; set; }
+        public string Value { get; set; }
+        public string Type { get; set; }
     }
 
     public static class SOAPHeaderParser
@@ -200,9 +206,13 @@ namespace PeppolSG.API.Service
                 .FirstOrDefault(e => e.Name.LocalName == "MessageProperties");
             var properties = messageProperties?
                 .Elements().Where(e => e.Name.LocalName == "Property")
-                .ToDictionary(
-                    e => e.Attribute("name")?.Value ?? "",
-                    e => e.Value);
+                .Select(e => new EbmsProperty
+                {
+                    Name = e.Attribute("name")?.Value,
+                    Value = e.Value,
+                    Type = e.Attribute("type")?.Value
+                })
+                .ToList() ?? new List<EbmsProperty>();
 
             // Payload hrefs
             var payloadHrefs = payloadInfo?
@@ -221,8 +231,8 @@ namespace PeppolSG.API.Service
                     var partProperties = partInfo.Elements().FirstOrDefault(e => e.Name.LocalName == "PartProperties");
                     if (partProperties != null)
                     {
-                        var properties = partProperties.Elements().Where(e => e.Name.LocalName == "Property");
-                        foreach (var property in properties)
+                        var properties1 = partProperties.Elements().Where(e => e.Name.LocalName == "Property");
+                        foreach (var property in properties1)
                         {
                             var name = property.Attribute("name")?.Value;
                             var value = property.Value;
@@ -247,7 +257,7 @@ namespace PeppolSG.API.Service
                 FromPartyIdType = fromPartyIdType,
                 ToPartyIdType = toPartyIdType,
                 PayloadHrefs = payloadHrefs,
-                Properties = properties ?? new Dictionary<string, string>(),
+                Properties = properties ?? new List<EbmsProperty>(),
                 PayloadProperties = payloadProperties
             };
         }

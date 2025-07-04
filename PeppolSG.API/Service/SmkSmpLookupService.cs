@@ -49,6 +49,40 @@ namespace PeppolSG.API.Service
             //log.Info($"Constructed Peppol EDN SMP ServiceMetadata URL: {url}");
             return url;
         }
+        public string BuildPeppolSmpServiceMetadataUrl(
+    string participantScheme, string participantId, string documentTypeId,
+    bool useProduction = false)
+        {
+            // Production SML zone: sml.peppolcentral.org or sml.peppol.eu
+            // Test SML: acc.edelivery.tech.ec.europa.eu
+            string smlZone = useProduction
+                ? "smp.peppolcentral.org"
+                : "acc.edelivery.tech.ec.europa.eu";
+            var bdns = ToPeppolSmlBdns(participantScheme, participantId);
+
+            // Document type must be URL encoded
+            var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
+
+            // Peppol SMP format:
+            //   https://B-<hash>.<SML_ZONE>/services/<doctype>
+            return $"https://{bdns}.{smlZone}/services/{encodedDocType}";
+        }
+        public static string ToPeppolSmlBdns(string participantScheme, string participantId)
+        {
+            // 1. Concatenate as per Peppol: e.g. "0088:123456789"
+            var fullId = $"{participantScheme}:{participantId}";
+            // 2. Remove spaces, lowercase, etc
+            fullId = fullId.Replace(" ", "").ToLowerInvariant();
+            // 3. SHA-1 hash
+            using (var sha1 = SHA1.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(fullId);
+                var hash = sha1.ComputeHash(bytes);
+                // 4. Convert to hex, uppercase
+                var hashHex = string.Concat(hash.Select(b => b.ToString("X2")));
+                return $"B-{hashHex}";
+            }
+        }
         /// <summary>
         /// Main method to look up endpoint metadata for a Peppol participant.
         /// Caches results for performance.
@@ -70,6 +104,7 @@ namespace PeppolSG.API.Service
             log.Info($"Performing live SMP lookup for {participantId}");
 
             // Perform SMP lookup
+            //IMPORTANT: BuildSmpUrl is not working, later used BuildEdnSmpServiceMetadataUrl. BuildPeppolSmpServiceMetadataUrl should have worked
             //var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId, processId);
             var smpUrl = BuildEdnSmpServiceMetadataUrl(participantScheme, participantId, documentTypeId);
 

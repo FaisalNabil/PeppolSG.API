@@ -44,8 +44,10 @@ namespace PeppolSG.API.Service
             string attachmentCid = null,
             byte[] encryptedAttachment = null)
         {
+            var certPath = System.Web.HttpContext.Current?.Server.MapPath(pfxPath) ?? pfxPath;
+
             var cert = new X509Certificate2(
-                pfxPath, pfxPassword,
+                certPath, pfxPassword,
                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
 
             // 1) Load into XmlDocument
@@ -66,11 +68,28 @@ namespace PeppolSG.API.Service
             sxml.AddReference(CreateExcC14NReference("#" + bodyId));
 
             // 4) If there's an attachment, encrypt it and add reference with direct digest calculation
+            //IMPORTANT: if attachment reference added like this, unable to sign document, says cid reference not found
             if (!string.IsNullOrEmpty(attachmentCid) && encryptedAttachment != null)
             {
                 var attachRef = CreateAttachmentReference(attachmentCid, encryptedAttachment);
                 sxml.AddReference(attachRef);
             }
+            //if (!string.IsNullOrEmpty(attachmentCid) && encryptedAttachment != null)
+            //{
+            //    var attachRef = new Reference(attachmentCid)
+            //    {
+            //        DigestMethod = SignedXml.XmlDsigSHA256Url
+            //    };
+            //    attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
+
+            //    // bind the in-memory encrypted bytes to that Reference
+            //    var fieldData = typeof(Reference).GetField("m_refTarget", BindingFlags.NonPublic | BindingFlags.Instance);
+            //    var fieldType = typeof(Reference).GetField("m_refTargetType", BindingFlags.NonPublic | BindingFlags.Instance);
+            //    fieldData.SetValue(attachRef, new MemoryStream(encryptedAttachment));
+            //    fieldType.SetValue(attachRef, 0); // stream
+
+            //    sxml.AddReference(attachRef);
+            //}
 
             // 5) KeyInfo → wsse:SecurityTokenReference
             sxml.KeyInfo = BuildKeyInfo(bstId);
@@ -100,16 +119,16 @@ namespace PeppolSG.API.Service
             {
                 DigestMethod = SignedXml.XmlDsigSHA256Url
             };
-            
+
             // Add the SwA transform for Peppol AS4 compliance
             attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
-            
+
             // Calculate digest directly without reflection
             var digest = ComputeSha256Digest(encryptedAttachment);
-            
+
             // Set the digest value directly using the public API
             attachRef.DigestValue = digest;
-            
+
             return attachRef;
         }
 
@@ -146,11 +165,11 @@ namespace PeppolSG.API.Service
 
             // Build the <wsse:SecurityTokenReference> with proper namespace declarations
             var strElement = doc.CreateElement("wsse", "SecurityTokenReference", wsseNs);
-            
+
             // CRITICAL FIX: Properly declare namespaces for WSS4J compatibility
             strElement.SetAttribute("xmlns:wsse", wsseNs);
             strElement.SetAttribute("xmlns:wsu", wsuNs);
-            
+
             // CRITICAL FIX: Set wsu:Id attribute using proper namespace URI, not XName
             strElement.SetAttribute("Id", wsuNs, "STR-" + Guid.NewGuid().ToString("N"));
 
@@ -159,7 +178,7 @@ namespace PeppolSG.API.Service
             refElement.SetAttribute("URI", "#" + bstId);
             refElement.SetAttribute("ValueType",
                 "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3");
-            
+
             strElement.AppendChild(refElement);
             keyInfoElement.AppendChild(strElement);
 
@@ -196,7 +215,6 @@ namespace PeppolSG.API.Service
         /// <summary>
         /// Builds WS-Security header with timestamp and certificate for WS-Security 1.1.1
         /// This is the enhanced method used by the AS4 controller
-        /// Enhanced for Phase4/WSS4J compatibility
         /// </summary>
         public static XElement BuildWsSecurityHeader(
             XElement messaging,
@@ -222,32 +240,19 @@ namespace PeppolSG.API.Service
                 // Build Binary Security Token with certificate
                 var binarySecurityToken = BuildBinarySecurityToken(signingCert, bstId);
 
-                // CRITICAL FIX: Create WS-Security header with proper namespace declarations
-                // for Phase4/WSS4J compatibility
+                // Create WS-Security header with proper namespace declarations
                 var wsSecurityHeader = new XElement(WSSE + "Security",
-                    // Namespace declarations - critical for WSS4J processing
                     new XAttribute(XNamespace.Xmlns + "wsse", WSSE.NamespaceName),
-                    new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName), 
+                    new XAttribute(XNamespace.Xmlns + "wsse11", WSSE11.NamespaceName),
                     new XAttribute(XNamespace.Xmlns + "wsu", WSU.NamespaceName),
-                    
-                    // SOAP mustUnderstand attribute
                     new XAttribute(S12 + "mustUnderstand", "1"),
-                    
-                    // Peppol-specific role attribute for AS4
                     new XAttribute(S12 + "role", "http://docs.oasis-open.org/ebxml-msg/ebms/v3.0/ns/core/200704/role/ebms"),
-                    
-                    // CRITICAL: Element ordering must be correct for WSS4J
-                    // 1. Timestamp first (WSS4J expects this order)
                     timestampElement,
-                    
-                    // 2. BinarySecurityToken second
                     binarySecurityToken
-                    
-                    // Note: Digital signature will be added later by SignEnvelope method
-                    // and will be placed after BST but before any EncryptedKey elements
+                // Note: Digital signature will be added later by SignEnvelope method
                 );
 
-                log.Debug("Phase4-compatible WS-Security header built successfully");
+                log.Debug("WS-Security header built successfully");
                 return wsSecurityHeader;
             }
             catch (Exception ex)
@@ -328,11 +333,11 @@ namespace PeppolSG.API.Service
 
                 // Check signature using sender certificate
                 bool isSignatureValid = signedXml.CheckSignature(senderCertificate, true);
-                
+
                 if (isSignatureValid)
                 {
                     log.Info("AS4 message signature verification successful");
-                    
+
                     // Additional validation: verify timestamp if present
                     var timestampValid = VerifyTimestamp(xmlDoc);
                     if (!timestampValid)
@@ -432,7 +437,7 @@ namespace PeppolSG.API.Service
 
                 // Create certificate chain
                 var chain = new X509Chain();
-                
+
                 // Configure chain validation settings for Peppol
                 chain.ChainPolicy.RevocationMode = X509RevocationMode.Online;
                 chain.ChainPolicy.RevocationFlag = X509RevocationFlag.ExcludeRoot;

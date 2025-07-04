@@ -32,9 +32,11 @@ namespace PeppolSG.API.Service
 
             try
             {
-                var certificate = new X509Certificate2(certPath, certPassword,
+                var path = System.Web.HttpContext.Current?.Server.MapPath(certPath) ?? certPath;
+
+                var certificate = new X509Certificate2(path, certPassword,
                     X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.Exportable);
-                
+
                 log.Info($"Successfully loaded certificate '{certificate.Subject}' with thumbprint '{certificate.Thumbprint}'");
                 return certificate;
             }
