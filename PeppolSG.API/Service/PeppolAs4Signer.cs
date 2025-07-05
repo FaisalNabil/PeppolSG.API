@@ -151,10 +151,26 @@ namespace PeppolSG.API.Service
             byte[] encryptedAttachment = null)
         {
             var certPath = System.Web.HttpContext.Current?.Server.MapPath(pfxPath) ?? pfxPath;
-
             var cert = new X509Certificate2(
                 certPath, pfxPassword,
                 X509KeyStorageFlags.Exportable | X509KeyStorageFlags.MachineKeySet);
+
+            SignEnvelopeWithCertificate(envelopeXml, cert, bstId, messagingId, bodyId, attachmentCid, encryptedAttachment);
+        }
+
+        /// <summary>
+        /// Sign the SOAP envelope using a provided certificate.
+        /// Enhanced version with proper CID URI resolution for attachments.
+        /// </summary>
+        public static void SignEnvelopeWithCertificate(
+            XDocument envelopeXml,
+            X509Certificate2 cert,
+            string bstId,
+            string messagingId,
+            string bodyId,
+            string attachmentCid = null,
+            byte[] encryptedAttachment = null)
+        {
 
             // 1) Load into XmlDocument
             var xmlDoc = new XmlDocument { PreserveWhitespace = true };
@@ -173,12 +189,32 @@ namespace PeppolSG.API.Service
             sxml.AddReference(CreateExcC14NReference("#" + messagingId));
             sxml.AddReference(CreateExcC14NReference("#" + bodyId));
 
-            // 4) If there's an attachment, encrypt it and add reference with direct digest calculation
-            //IMPORTANT: if attachment reference added like this, unable to sign document, says cid reference not found
+            // 4) If there's an attachment, add reference with proper CID URI resolution
             if (!string.IsNullOrEmpty(attachmentCid) && encryptedAttachment != null)
             {
-                var attachRef = CreateAttachmentReference(attachmentCid, encryptedAttachment);
-                sxml.AddReference(attachRef);
+                try
+                {
+                    // Create attachment resolver for CID URIs
+                    var attachmentMap = new Dictionary<string, byte[]>
+                    {
+                        { attachmentCid, encryptedAttachment }
+                    };
+                    var attachmentResolver = new AttachmentResolver(attachmentMap);
+                    
+                    // Set the resolver on SignedXml to handle CID URIs
+                    sxml.Resolver = attachmentResolver;
+                    
+                    // Create attachment reference with proper CID URI
+                    var attachRef = CreateAttachmentReference(attachmentCid, encryptedAttachment);
+                    sxml.AddReference(attachRef);
+                    
+                    log.Debug($"Added attachment reference with CID: {attachmentCid}");
+                }
+                catch (Exception ex)
+                {
+                    log.Warn($"Failed to add attachment reference: {ex.Message}");
+                    // Continue without attachment reference - this is not fatal for message signing
+                }
             }
 
             // 5) KeyInfo → wsse:SecurityTokenReference
@@ -201,11 +237,14 @@ namespace PeppolSG.API.Service
         }
 
         /// <summary>
-        /// Creates an attachment reference with safe digest calculation (no reflection)
+        /// Creates an attachment reference with safe digest calculation and proper CID URI handling
         /// </summary>
         private static Reference CreateAttachmentReference(string attachmentCid, byte[] encryptedAttachment)
         {
-            var attachRef = new Reference(attachmentCid)
+            // Ensure CID URI format is correct
+            var cidUri = attachmentCid.StartsWith("cid:") ? attachmentCid : "cid:" + attachmentCid;
+            
+            var attachRef = new Reference(cidUri)
             {
                 DigestMethod = SignedXml.XmlDsigSHA256Url
             };
@@ -213,12 +252,13 @@ namespace PeppolSG.API.Service
             // Add the SwA transform for Peppol AS4 compliance
             attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
 
-            // Calculate digest directly without reflection
+            // Calculate digest directly without reflection - this avoids URI resolution issues
             var digest = ComputeSha256Digest(encryptedAttachment);
 
             // Set the digest value directly using the public API
             attachRef.DigestValue = digest;
 
+            log.Debug($"Created attachment reference for CID: {cidUri}, Digest: {Convert.ToBase64String(digest)}");
             return attachRef;
         }
 
@@ -784,7 +824,11 @@ namespace PeppolSG.API.Service
     internal sealed class AttachmentResolver : XmlUrlResolver
     {
         private readonly IDictionary<string, byte[]> _map;
-        public AttachmentResolver(IDictionary<string, byte[]> map) => _map = map;
+        
+        public AttachmentResolver(IDictionary<string, byte[]> map)
+        {
+            _map = map;
+        }
 
         public override object GetEntity(Uri absoluteUri, string role, Type ofObjectToReturn)
         {

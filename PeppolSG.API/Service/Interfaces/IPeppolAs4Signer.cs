@@ -8,5 +8,6 @@ namespace PeppolSG.API.Service.Interfaces
         void SignEnvelope(XDocument envelopeXml, X509Certificate2 signingCert, string bstId, string messagingId, string bodyId, string attachmentCid = null, byte[] encryptedAttachment = null);
         bool VerifyMessageSignature(XDocument soapEnvelope, X509Certificate2 senderCertificate);
         bool VerifyTimestamp(XDocument soapEnvelope);
+        XElement BuildWsSecurityHeader(XElement messaging, X509Certificate2 signingCert, string timestamp, string messagingId);
     }
 } 

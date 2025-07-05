@@ -46,6 +46,7 @@ namespace PeppolSG.API.Controllers
         private readonly IAs4MessageBuilder _messageBuilder;
         private readonly IMimeParserService _mimeParser;
         private readonly IPayloadPersister _payloadPersister;
+        private readonly IPeppolAs4Signer _peppolAs4Signer;
 
         /// <summary>
         /// Public constructor for ASP.NET Web API to instantiate the controller.
@@ -61,6 +62,7 @@ namespace PeppolSG.API.Controllers
             _messageBuilder = new As4MessageBuilder(_configService);
             _mimeParser = new MimeParserService();
             _payloadPersister = new FileSystemPayloadPersister();
+            _peppolAs4Signer = new PeppolAs4SignerService();
             
             log.Info("AS4 Controller initialized with default service container.");
         }
@@ -75,7 +77,8 @@ namespace PeppolSG.API.Controllers
             ISmkSmpLookupService smkSmpLookup,
             IAs4MessageBuilder messageBuilder,
             IMimeParserService mimeParser,
-            IPayloadPersister payloadPersister)
+            IPayloadPersister payloadPersister,
+            IPeppolAs4Signer peppolAs4Signer = null)
         {
             _configService = configService;
             _messageValidator = messageValidator;
@@ -84,6 +87,7 @@ namespace PeppolSG.API.Controllers
             _messageBuilder = messageBuilder;
             _mimeParser = mimeParser;
             _payloadPersister = payloadPersister;
+            _peppolAs4Signer = peppolAs4Signer ?? new PeppolAs4SignerService();
 
             log.Info("AS4 Controller initialized via Dependency Injection.");
         }
@@ -131,12 +135,7 @@ namespace PeppolSG.API.Controllers
                     return await HandleEbms3Error(correlationId, error.Code ?? "EBMS:0004", error.Severity ?? "Error", error.Description ?? "Validation failed", validationResult.MessageId, HttpStatusCode.BadRequest);
                 }
 
-                // Convert XDocument to XmlDocument for VerifyTimestamp
-                var xmlDoc = new XmlDocument { PreserveWhitespace = true };
-                using (var reader = soapXml.CreateReader())
-                    xmlDoc.Load(reader);
-                
-                if (!PeppolAs4Signer.VerifyTimestamp(xmlDoc))
+                if (!_peppolAs4Signer.VerifyTimestamp(soapXml))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0103", "SecurityFailure", "Timestamp validation failed.", validationResult.MessageId, HttpStatusCode.Unauthorized);
                 }
@@ -157,8 +156,8 @@ namespace PeppolSG.API.Controllers
                     return await HandleEbms3Error(correlationId, "EBMS:0101", "FailedAuthentication", "Sender certificate is not valid.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
 
-                //IMPORTANT: Verify the message signature using the sender's certificate (not working)
-                if (!PeppolAs4Signer.VerifyMessageSignature(soapXml, senderCert))
+                //IMPORTANT: Verify the message signature using the sender's certificate
+                if (!_peppolAs4Signer.VerifyMessageSignature(soapXml, senderCert))
                 {
                      return await HandleEbms3Error(correlationId, "EBMS:0102", "FailedAuthentication", "Message signature validation failed.", userMsg.MessageId, HttpStatusCode.Unauthorized);
                 }
@@ -268,7 +267,7 @@ namespace PeppolSG.API.Controllers
 
                 // Step 1: Build messaging and WS-Security header with proper element IDs
                 var messaging = _messageBuilder.BuildMessaging(receiptMessage, messagingId);
-                var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, timestamp, messagingId);
+                var wsSecurityHeader = _peppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, timestamp, messagingId);
 
                 // Step 2: CRITICAL FIX - Validate and ensure all referenced elements have proper IDs
                 ValidateReceiptElementIds(wsSecurityHeader, messaging, bodyId, messagingId);
@@ -276,16 +275,15 @@ namespace PeppolSG.API.Controllers
                 // Step 3: Build SOAP envelope with validated elements
                 var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
 
-                // Step 4: Enhanced signing with proper reference validation
+                // Step 4: Enhanced signing using centralized PeppolAs4Signer service
                 try
                 {
-                    var certPath = _configService.GetSigningCertificatePath();
-                    var certPassword = _configService.GetSigningCertificatePassword();
+                    var bstId = "BST-Receipt-" + Guid.NewGuid().ToString("N");
                     
-                    // CRITICAL FIX: Use enhanced signing method that validates references before signing
-                    SignReceiptEnvelopeWithValidation(soapEnvelope, certPath, certPassword, messagingId, bodyId, correlationId);
+                    // Use centralized signing service for consistent behavior
+                    _peppolAs4Signer.SignEnvelope(soapEnvelope, signingCert, bstId, messagingId, bodyId);
                     
-                    log.Info($"[{correlationId}] AS4 Receipt signed successfully");
+                    log.Info($"[{correlationId}] AS4 Receipt signed successfully using PeppolAs4Signer service");
                 }
                 catch (Exception ex)
                 {
@@ -356,77 +354,7 @@ namespace PeppolSG.API.Controllers
             }
         }
 
-        /// <summary>
-        /// Enhanced receipt signing with reference validation
-        /// Prevents malformed reference errors by validating all references before signing
-        /// </summary>
-        private void SignReceiptEnvelopeWithValidation(XDocument soapEnvelope, string certPath, string certPassword, 
-            string messagingId, string bodyId, string correlationId)
-        {
-            try
-            {
-                // Convert to XmlDocument for SignedXml processing
-                var xmlDoc = new XmlDocument { PreserveWhitespace = true };
-                using (var reader = soapEnvelope.CreateReader())
-                    xmlDoc.Load(reader);
 
-                // Ensure Body element has the correct ID
-                var nsManager = new XmlNamespaceManager(xmlDoc.NameTable);
-                nsManager.AddNamespace("soap", "http://www.w3.org/2003/05/soap-envelope");
-                nsManager.AddNamespace("wsu", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd");
-
-                var bodyElement = xmlDoc.SelectSingleNode("//soap:Body", nsManager) as XmlElement;
-                if (bodyElement != null && string.IsNullOrEmpty(bodyElement.GetAttribute("Id", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd")))
-                {
-                    bodyElement.SetAttribute("Id", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd", bodyId);
-                    log.Debug($"[{correlationId}] Added wsu:Id to Body element: {bodyId}");
-                }
-
-                // Load certificate
-                var cert = new X509Certificate2(certPath, certPassword, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
-
-                // Create SignedXmlWithId for enhanced ID resolution
-                var signedXml = new SignedXmlWithId(xmlDoc);
-                signedXml.SigningKey = cert.GetRSAPrivateKeySafe(); // Use safe wrapper
-
-                // Create simplified reference list for receipts (avoid problematic references)
-                var reference = new Reference("#" + bodyId);
-                reference.AddTransform(new XmlDsigExcC14NTransform());
-                reference.DigestMethod = SignedXml.XmlDsigSHA256Url;
-                signedXml.AddReference(reference);
-
-                // Add simplified KeyInfo for receipts
-                var keyInfo = new KeyInfo();
-                keyInfo.AddClause(new KeyInfoX509Data(cert));
-                signedXml.KeyInfo = keyInfo;
-
-                // Sign with enhanced error handling
-                signedXml.ComputeSignature();
-
-                // Insert signature into Security header
-                nsManager.AddNamespace("wsse", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd");
-                var securityElement = xmlDoc.SelectSingleNode("//wsse:Security", nsManager) as XmlElement;
-                if (securityElement != null)
-                {
-                    securityElement.AppendChild(xmlDoc.ImportNode(signedXml.GetXml(), true));
-                    log.Debug($"[{correlationId}] Signature successfully added to WS-Security header");
-                }
-                else
-                {
-                    log.Warn($"[{correlationId}] Could not locate WS-Security header for signature insertion");
-                }
-
-                // Update the original XDocument
-                soapEnvelope.Root.ReplaceWith(XElement.Load(new XmlNodeReader(xmlDoc.DocumentElement)));
-                
-                log.Info($"[{correlationId}] Receipt envelope signed successfully with validated references");
-            }
-            catch (Exception ex)
-            {
-                log.Error($"[{correlationId}] Enhanced receipt signing failed: {ex.Message}", ex);
-                throw new InvalidOperationException($"Receipt signing failed: {ex.Message}", ex);
-            }
-        }
 
         /// <summary>
         /// Handles ebMS3 compliant error responses
@@ -461,7 +389,7 @@ namespace PeppolSG.API.Controllers
                 {
                     var signingCert = _configService.LoadSigningCertificate();
                     // Build a basic WS-Security header for error messages
-                    var wsSecurityHeader = PeppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, errorTimestamp, messagingId);
+                    var wsSecurityHeader = _peppolAs4Signer.BuildWsSecurityHeader(messaging, signingCert, errorTimestamp, messagingId);
                     soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
                 }
                 catch (Exception ex)
@@ -675,10 +603,9 @@ namespace PeppolSG.API.Controllers
                     var bodyId = "id-" + Guid.NewGuid().ToString("N");
                     soapDoc = _messageBuilder.WrapInSoapEnvelope(wsseSec, messaging, bodyId);
                     
-                    PeppolAs4Signer.SignEnvelope(
+                    _peppolAs4Signer.SignEnvelope(
                         soapDoc, 
-                        _configService.GetSigningCertificatePath(), 
-                        _configService.GetSigningCertificatePassword(),
+                        senderCert,
                         senderBstId, messagingId, bodyId,
                         partHref, encryptedAttachment
                     );

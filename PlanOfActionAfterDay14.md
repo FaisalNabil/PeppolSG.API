@@ -679,4 +679,105 @@ Upon completion of Day 18 tasks, the Peppol Access Point will generate fully com
 
 This implementation addresses the critical gap in AS4 receipt specification compliance and ensures the Access Point meets all Peppol network requirements for receipt processing.
 
+---
+
+## Day 19: PeppolAs4Signer Integration and CID URI Resolution Fixes
+
+### Overview
+Two critical issues have been identified that need immediate resolution:
+
+1. **Issue 1**: The Receive API is performing local signing instead of using the centralized `PeppolAs4Signer` service, leading to inconsistent signing behavior and potential interoperability issues.
+
+2. **Issue 2**: When sending attachments to `PeppolAs4Signer`, we encounter the error: `System.Security.Cryptography.CryptographicException: 'Unable to resolve Uri cid:phase4-att-9b42d5fb0eb246caaca67a182b099b10@cid.'` This occurs because the SignedXml framework cannot resolve CID URIs without proper attachment resolution.
+
+### Root Cause Analysis
+
+#### Issue 1: Inconsistent Signing Architecture
+- The `ReceiveAs4Message()` method in `As4Controller.cs` implements local signing logic in `SignReceiptEnvelopeWithValidation()`
+- This bypasses the centralized `PeppolAs4Signer` which contains all the AS4/WS-Security expertise
+- Results in duplicated code and potential inconsistencies
+
+#### Issue 2: CID URI Resolution Failure
+- The `PeppolAs4Signer.SignEnvelope()` method tries to add attachment references with CID URIs
+- .NET's `SignedXml` framework cannot resolve `cid:` URIs without a custom `XmlUrlResolver`
+- The `AttachmentResolver` class exists but is not being used during signing
+- This causes the signing process to fail when attachments are present
+
+### Implementation Tasks
+
+#### Task 1: Refactor Receive API to Use PeppolAs4Signer Interface
+1. Create an injectable `IPeppolAs4Signer` implementation
+2. Update `As4Controller` constructor to accept `IPeppolAs4Signer` dependency
+3. Replace local signing logic with `PeppolAs4Signer` calls
+4. Ensure consistent signing behavior across send and receive operations
+
+#### Task 2: Fix CID URI Resolution in PeppolAs4Signer
+1. Enhance `SignEnvelope()` method to use `AttachmentResolver` for CID URIs
+2. Modify attachment reference handling to support proper URI resolution
+3. Implement proper attachment digest calculation without requiring URI resolution
+4. Add comprehensive error handling for attachment signing scenarios
+
+#### Task 3: Implement Best Practices for AS4 Attachment Signing
+1. Follow OASIS WS-Security SwA Profile 1.1.1 specifications
+2. Implement proper MIME Part Reference Transforms
+3. Ensure compatibility with other Peppol Access Points
+4. Add support for both Content-Only and Complete-Signature transforms
+
+#### Task 4: Enhanced Testing and Validation
+1. Create comprehensive tests for attachment signing scenarios
+2. Validate CID URI resolution with various attachment types
+3. Test interoperability with Phase4 and other AS4 implementations
+4. Ensure proper error handling and fallback mechanisms
+
+### Technical Implementation Details
+
+#### 1. PeppolAs4Signer Service Implementation
+```csharp
+public class PeppolAs4SignerService : IPeppolAs4Signer
+{
+    public void SignEnvelope(XDocument envelopeXml, X509Certificate2 signingCert, 
+        string bstId, string messagingId, string bodyId, 
+        string attachmentCid = null, byte[] encryptedAttachment = null)
+    {
+        // Enhanced implementation with proper attachment resolution
+    }
+}
+```
+
+#### 2. CID URI Resolution Enhancement
+- Integrate `AttachmentResolver` into signing process
+- Implement attachment digest calculation without URI dereferencing
+- Add proper error handling for missing or malformed CID references
+
+#### 3. SwA Profile Compliance
+- Implement `Attachment-Content-Signature-Transform`
+- Support `Attachment-Complete-Signature-Transform` 
+- Ensure proper MIME canonicalization
+- Follow eDelivery AS4 Profile requirements
+
+### Success Criteria
+1. ✅ Receive API uses centralized `PeppolAs4Signer` for all signing operations
+2. ✅ CID URI resolution works correctly for attachment signing
+3. ✅ No more "Unable to resolve Uri cid:" errors
+4. ✅ Consistent signing behavior between send and receive operations
+5. ✅ Full compliance with OASIS WS-Security SwA Profile 1.1.1
+6. ✅ Successful interoperability testing with other Peppol Access Points
+7. ✅ Comprehensive test coverage for attachment signing scenarios
+8. ✅ Production-ready error handling and logging
+
+### Files to be Modified
+- `PeppolSG.API/Service/PeppolAs4Signer.cs` - Enhanced CID resolution
+- `PeppolSG.API/Service/Interfaces/IPeppolAs4Signer.cs` - Interface updates
+- `PeppolSG.API/Controllers/As4Controller.cs` - Refactor to use service
+- `PeppolSG.API.Tests/Tests/As4ScenarioTests.cs` - Day 19 test suite
+- `Day19_ValidationScript.cs` - Standalone validation script
+
+### Best Practices Implementation
+Based on web research of AS4 WS-Security best practices:
+1. **SwA Profile Compliance**: Full implementation of OASIS SwA Profile 1.1.1
+2. **Attachment Transforms**: Proper MIME Part Reference Transforms
+3. **URI Resolution**: Custom resolver for CID scheme URIs
+4. **Error Handling**: Graceful fallback for attachment signing failures
+5. **Interoperability**: Compatibility with Phase4, Holodeck B2B, and other AS4 implementations
+
 --- 
