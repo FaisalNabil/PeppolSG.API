@@ -161,39 +161,43 @@ namespace PeppolSG.API.Service
 
         /// <summary>
         /// Builds SignalMessage (Receipt) according to AS4 Profile
+        /// Enhanced for Peppol AS4 Profile v2.0.3 NonRepudiationInformation support
         /// </summary>
         public XElement BuildSignalMessage(
             string timestamp,
             string messageId,
             string refToMessageId,
-            IEnumerable<XElement> references = null)
+            IEnumerable<XElement> signatureReferences = null)
         {
             if (string.IsNullOrEmpty(timestamp)) throw new ArgumentNullException(nameof(timestamp));
             if (string.IsNullOrEmpty(messageId)) throw new ArgumentNullException(nameof(messageId));
             if (string.IsNullOrEmpty(refToMessageId)) throw new ArgumentNullException(nameof(refToMessageId));
 
-            var info = new XElement(EB + "MessageInfo",
+            var messageInfo = new XElement(EB + "MessageInfo",
                 new XElement(EB + "Timestamp", timestamp),
                 new XElement(EB + "MessageId", messageId),
                 new XElement(EB + "RefToMessageId", refToMessageId)
             );
 
+            // Build Receipt with NonRepudiationInformation for Peppol AS4 Profile v2.0.3 compliance
             XElement receipt;
-            if (references?.Any() == true)
+            if (signatureReferences?.Any() == true)
             {
+                // Create NonRepudiationInformation with MessagePartNRInformation elements
                 var nrInfo = new XElement(EBBP + "NonRepudiationInformation",
-                    references.Select(r =>
-                        new XElement(EBBP + "MessagePartNRInformation", r)
+                    signatureReferences.Select(refElement =>
+                        new XElement(EBBP + "MessagePartNRInformation", refElement)
                     )
                 );
                 receipt = new XElement(EB + "Receipt", nrInfo);
             }
             else
             {
+                // Fallback for backward compatibility - empty receipt
                 receipt = new XElement(EB + "Receipt");
             }
 
-            return new XElement(EB + "SignalMessage", info, receipt);
+            return new XElement(EB + "SignalMessage", messageInfo, receipt);
         }
 
         /// <summary>

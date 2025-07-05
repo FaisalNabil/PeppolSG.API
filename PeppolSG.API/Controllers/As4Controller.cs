@@ -227,7 +227,8 @@ namespace PeppolSG.API.Controllers
                 }
 
                 log.Info($"[{correlationId}] Message {userMsg.MessageId} successfully validated and processed. Attachments: {attachmentPaths.Count}");
-                return await GenerateAs4Receipt(userMsg.MessageId, correlationId);
+                // ENHANCEMENT: Pass original SOAP message to receipt generation for NonRepudiationInformation
+                return await GenerateAs4Receipt(userMsg.MessageId, correlationId, soapXml);
             }
             catch (Exception ex)
             {
@@ -238,9 +239,9 @@ namespace PeppolSG.API.Controllers
 
         /// <summary>
         /// Generates AS4 Receipt (SignalMessage) according to AS4 profile
-        /// Enhanced for Phase4/WSS4J compatibility
+        /// Enhanced for Phase4/WSS4J compatibility and Peppol AS4 Profile v2.0.3 NonRepudiationInformation
         /// </summary>
-        private async Task<IHttpActionResult> GenerateAs4Receipt(string refToMessageId, string correlationId)
+        private async Task<IHttpActionResult> GenerateAs4Receipt(string refToMessageId, string correlationId, XDocument originalMessage = null)
         {
             log.Info($"[{correlationId}] Generating AS4 Receipt for message: {refToMessageId}");
 
@@ -249,7 +250,15 @@ namespace PeppolSG.API.Controllers
                 var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                 var messageId = $"receipt-{Guid.NewGuid()}@{_configService.GetPeppolDomain()}";
                 
-                var receiptMessage = _messageBuilder.BuildSignalMessage(timestamp, messageId, refToMessageId);
+                // ENHANCEMENT: Extract signature references from original message for NonRepudiationInformation
+                IEnumerable<XElement> signatureReferences = null;
+                if (originalMessage != null)
+                {
+                    signatureReferences = ExtractSignatureReferences(originalMessage, correlationId);
+                }
+                
+                // Build receipt with NonRepudiationInformation for Peppol AS4 Profile v2.0.3 compliance
+                var receiptMessage = _messageBuilder.BuildSignalMessage(timestamp, messageId, refToMessageId, signatureReferences);
 
                 var signingCert = _certificateManager.LoadSigningCertificate();
                 var bodyId = "body-" + Guid.NewGuid().ToString("N");
@@ -1337,6 +1346,54 @@ namespace PeppolSG.API.Controllers
                     return remoteEndpoint.Address;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Extracts signature references from incoming message for NonRepudiationInformation
+        /// Required for Peppol AS4 Profile v2.0.3 compliant receipt generation
+        /// </summary>
+        private IEnumerable<XElement> ExtractSignatureReferences(XDocument incomingMessage, string correlationId)
+        {
+            var references = new List<XElement>();
+            
+            try
+            {
+                log.Debug($"[{correlationId}] Extracting signature references for receipt NonRepudiationInformation");
+                
+                // Extract all ds:Reference elements from WS-Security signature
+                var signatureReferences = incomingMessage
+                    .Descendants(XName.Get("Reference", "http://www.w3.org/2001/09/xmldsig#"))
+                    .Where(r => !string.IsNullOrEmpty(r.Attribute("URI")?.Value))
+                    .ToList();
+                    
+                foreach (var reference in signatureReferences)
+                {
+                    try
+                    {
+                        // Clone the reference element for inclusion in receipt
+                        // This preserves the original structure including transforms and digest method
+                        var clonedRef = new XElement(reference);
+                        references.Add(clonedRef);
+                        
+                        var uri = reference.Attribute("URI")?.Value;
+                        log.Debug($"[{correlationId}] Extracted signature reference: {uri}");
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Warn($"[{correlationId}] Failed to clone signature reference: {ex.Message}");
+                        // Continue with other references
+                    }
+                }
+                
+                log.Info($"[{correlationId}] Extracted {references.Count} signature references for receipt NRI");
+                return references;
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"[{correlationId}] Failed to extract signature references: {ex.Message}");
+                // Return empty collection - receipt will be generated without NRI
+                return Enumerable.Empty<XElement>();
+            }
         }
     }
 

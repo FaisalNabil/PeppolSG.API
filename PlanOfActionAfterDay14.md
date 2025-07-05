@@ -370,3 +370,313 @@ The approach prioritizes:
 4. **Maintaining full Peppol/AS4/ebMS3 compliance**
 
 Upon completion, the Peppol Access Point will be fully compatible with .NET Framework 4.8 and ready for production deployment with complete Phase4/WSS4J interoperability. 
+
+---
+
+## **Day 18: AS4 Receipt NonRepudiationInformation Implementation** 🔧
+**Status**: 🔄 **IN PROGRESS**  
+**Objective**: Fix AS4 receipt generation to include proper NonRepudiationInformation elements as required by Peppol AS4 Profile v2.0.3
+
+#### **🚨 CRITICAL RECEIPT ISSUE IDENTIFIED**
+
+##### **Current Problem:**
+The AS4 receipt being generated contains an empty `<eb:Receipt/>` element, but according to Peppol AS4 specifications and eDelivery AS4 Profile, it should contain `NonRepudiationInformation` with `MessagePartNRInformation` elements that reference the signed parts of the original message.
+
+**Log Evidence:**
+```xml
+<eb:Receipt/>  <!-- EMPTY - This is incorrect -->
+```
+
+**Should be:**
+```xml
+<eb:Receipt>
+    <ebbp:NonRepudiationInformation>
+        <ebbp:MessagePartNRInformation>
+            <ds:Reference>...</ds:Reference>
+        </ebbp:MessagePartNRInformation>
+    </ebbp:NonRepudiationInformation>
+</eb:Receipt>
+```
+
+##### **Root Cause Analysis:**
+1. **Missing NRI Generation**: The `BuildSignalMessage` method in `As4MessageBuilder.cs` creates receipts without NonRepudiationInformation
+2. **No Reference Extraction**: The receipt generation doesn't extract signature references from the original incoming message
+3. **Specification Non-Compliance**: Current implementation doesn't follow Peppol AS4 Profile v2.0.3 receipt requirements
+
+#### **📋 TASKS FOR DAY 18**
+
+##### **Task 18.1: Enhance As4MessageBuilder for NRI Support**
+**Priority**: CRITICAL  
+**Estimated Time**: 3-4 hours
+
+**Implementation Plan:**
+```csharp
+// Enhanced BuildSignalMessage method
+public XElement BuildSignalMessage(
+    string timestamp,
+    string messageId,
+    string refToMessageId,
+    IEnumerable<XElement> signatureReferences = null)
+{
+    // Build MessageInfo
+    var messageInfo = new XElement(EB + "MessageInfo",
+        new XElement(EB + "Timestamp", timestamp),
+        new XElement(EB + "MessageId", messageId),
+        new XElement(EB + "RefToMessageId", refToMessageId)
+    );
+
+    // Build Receipt with NonRepudiationInformation
+    XElement receipt;
+    if (signatureReferences?.Any() == true)
+    {
+        var nrInfo = new XElement(EBBP + "NonRepudiationInformation",
+            signatureReferences.Select(refElement =>
+                new XElement(EBBP + "MessagePartNRInformation", refElement)
+            )
+        );
+        receipt = new XElement(EB + "Receipt", nrInfo);
+    }
+    else
+    {
+        // Fallback for backward compatibility
+        receipt = new XElement(EB + "Receipt");
+    }
+
+    return new XElement(EB + "SignalMessage", messageInfo, receipt);
+}
+```
+
+**Files to Modify:**
+- `PeppolSG.API/Service/As4MessageBuilder.cs`
+- `PeppolSG.API/Service/Interfaces/IAs4MessageBuilder.cs`
+
+##### **Task 18.2: Implement Signature Reference Extraction**
+**Priority**: CRITICAL  
+**Estimated Time**: 4-5 hours
+
+**Implementation Plan:**
+```csharp
+// New method in As4Controller.cs
+private IEnumerable<XElement> ExtractSignatureReferences(XDocument incomingMessage)
+{
+    var references = new List<XElement>();
+    
+    try
+    {
+        var nsManager = new XmlNamespaceManager(new NameTable());
+        nsManager.AddNamespace("ds", "http://www.w3.org/2001/09/xmldsig#");
+        nsManager.AddNamespace("wsse", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd");
+        
+        // Extract all ds:Reference elements from WS-Security signature
+        var signatureReferences = incomingMessage
+            .Descendants(XName.Get("Reference", "http://www.w3.org/2001/09/xmldsig#"))
+            .Where(r => !string.IsNullOrEmpty(r.Attribute("URI")?.Value))
+            .ToList();
+            
+        foreach (var reference in signatureReferences)
+        {
+            // Clone the reference element for inclusion in receipt
+            var clonedRef = new XElement(reference);
+            references.Add(clonedRef);
+        }
+        
+        log.Debug($"Extracted {references.Count} signature references for receipt NRI");
+        return references;
+    }
+    catch (Exception ex)
+    {
+        log.Warn($"Failed to extract signature references: {ex.Message}");
+        return Enumerable.Empty<XElement>();
+    }
+}
+```
+
+**Files to Modify:**
+- `PeppolSG.API/Controllers/As4Controller.cs`
+
+##### **Task 18.3: Update Receipt Generation Logic**
+**Priority**: CRITICAL  
+**Estimated Time**: 2-3 hours
+
+**Implementation Plan:**
+```csharp
+// Updated GenerateAs4Receipt method
+private async Task<IHttpActionResult> GenerateAs4Receipt(
+    string refToMessageId, 
+    string correlationId, 
+    XDocument originalMessage = null)
+{
+    log.Info($"[{correlationId}] Generating AS4 Receipt for message: {refToMessageId}");
+
+    try
+    {
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        var messageId = $"receipt-{Guid.NewGuid()}@{_configService.GetPeppolDomain()}";
+        
+        // ENHANCEMENT: Extract signature references from original message
+        IEnumerable<XElement> signatureReferences = null;
+        if (originalMessage != null)
+        {
+            signatureReferences = ExtractSignatureReferences(originalMessage);
+        }
+        
+        // Build receipt with NonRepudiationInformation
+        var receiptMessage = _messageBuilder.BuildSignalMessage(
+            timestamp, 
+            messageId, 
+            refToMessageId, 
+            signatureReferences);
+
+        // Continue with existing signing logic...
+        var signingCert = _certificateManager.LoadSigningCertificate();
+        var bodyId = "body-" + Guid.NewGuid().ToString("N");
+        var messagingId = "_1";
+
+        log.Debug($"[{correlationId}] Building receipt with NRI - MessageId: {messageId}, References: {signatureReferences?.Count() ?? 0}");
+
+        // Rest of the method remains the same...
+    }
+    catch (Exception ex)
+    {
+        log.Error($"[{correlationId}] Failed to generate AS4 Receipt: {ex.Message}", ex);
+        return InternalServerError(new Exception($"Receipt generation failed: {ex.Message}"));
+    }
+}
+```
+
+**Files to Modify:**
+- `PeppolSG.API/Controllers/As4Controller.cs`
+
+##### **Task 18.4: Update Message Processing Pipeline**
+**Priority**: HIGH  
+**Estimated Time**: 2-3 hours
+
+**Implementation Plan:**
+- Modify the main `ReceiveAs4Message` method to preserve the original SOAP message for receipt generation
+- Ensure the original message is passed to `GenerateAs4Receipt`
+- Add proper error handling for cases where signature references cannot be extracted
+
+**Files to Modify:**
+- `PeppolSG.API/Controllers/As4Controller.cs` (main processing method)
+
+##### **Task 18.5: Add Comprehensive Testing**
+**Priority**: HIGH  
+**Estimated Time**: 3-4 hours
+
+**Implementation Plan:**
+```csharp
+[TestMethod]
+public void Test_Day18_Receipt_NonRepudiationInformation_Generation()
+{
+    // Arrange
+    var originalMessageWithSignature = CreateMockSignedMessage();
+    var references = ExtractSignatureReferences(originalMessageWithSignature);
+    
+    // Act
+    var receiptMessage = _messageBuilder.BuildSignalMessage(
+        DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+        "receipt-test@example.com",
+        "original-test@example.com",
+        references);
+    
+    // Assert
+    var receipt = receiptMessage.Element(EB + "Receipt");
+    Assert.IsNotNull(receipt, "Receipt element should exist");
+    
+    var nrInfo = receipt.Element(EBBP + "NonRepudiationInformation");
+    Assert.IsNotNull(nrInfo, "NonRepudiationInformation should be present");
+    
+    var messagePartNRInfos = nrInfo.Elements(EBBP + "MessagePartNRInformation").ToList();
+    Assert.IsTrue(messagePartNRInfos.Count > 0, "Should contain MessagePartNRInformation elements");
+    
+    // Verify each MessagePartNRInformation contains a ds:Reference
+    foreach (var messagePartNRInfo in messagePartNRInfos)
+    {
+        var dsReference = messagePartNRInfo.Element(DS + "Reference");
+        Assert.IsNotNull(dsReference, "Each MessagePartNRInformation should contain a ds:Reference");
+        Assert.IsNotNull(dsReference.Attribute("URI"), "Reference should have URI attribute");
+    }
+}
+
+[TestMethod]
+public void Test_Day18_Receipt_Peppol_Compliance_Validation()
+{
+    // Test that generated receipts comply with Peppol AS4 Profile v2.0.3
+    // Verify namespace declarations, element structure, and content
+}
+
+[TestMethod]
+public void Test_Day18_Receipt_Phase4_Interoperability()
+{
+    // Test that receipts are compatible with Phase4 implementation
+    // Verify element ordering, namespace usage, and reference formats
+}
+```
+
+**Files to Modify:**
+- `PeppolSG.API.Tests/Tests/As4ScenarioTests.cs`
+
+##### **Task 18.6: Documentation and Validation**
+**Priority**: MEDIUM  
+**Estimated Time**: 2 hours
+
+**Implementation Plan:**
+- Update code documentation to reflect Peppol AS4 Profile v2.0.3 compliance
+- Add detailed comments explaining NonRepudiationInformation requirements
+- Create validation rules for receipt structure
+
+#### **🎯 SUCCESS CRITERIA**
+
+1. **✅ Compliant Receipt Generation**: AS4 receipts contain proper NonRepudiationInformation elements
+2. **✅ Reference Preservation**: All signature references from original message are included in receipt
+3. **✅ Peppol Compliance**: Receipts follow Peppol AS4 Profile v2.0.3 specifications  
+4. **✅ Phase4 Interoperability**: Receipts are compatible with Phase4 implementation
+5. **✅ Backward Compatibility**: Existing receipt functionality continues to work
+6. **✅ Test Coverage**: Comprehensive tests validate receipt structure and content
+
+#### **🔍 VALIDATION STEPS**
+
+1. **Receipt Structure Validation**:
+   - Verify `eb:Receipt` contains `ebbp:NonRepudiationInformation`
+   - Confirm `ebbp:MessagePartNRInformation` elements are present
+   - Validate `ds:Reference` elements are properly included
+
+2. **Peppol Testbed Validation**:
+   - Test receipt generation with Peppol testbed
+   - Verify interoperability with other Peppol Access Points
+   - Confirm compliance with eDelivery AS4 Profile
+
+3. **Phase4 Compatibility Testing**:
+   - Test receipt processing with Phase4 implementation
+   - Verify namespace declarations and element ordering
+   - Confirm reference resolution works correctly
+
+#### **📚 TECHNICAL REFERENCES**
+
+- **Peppol AS4 Profile v2.0.3**: Section on Receipt Messages and NonRepudiationInformation
+- **eDelivery AS4 Profile v1.1.0**: Receipt specification and NRI requirements  
+- **OASIS ebMS 3.0**: SignalMessage and Receipt element definitions
+- **WS-Security 1.1**: Digital signature and reference handling
+
+#### **⚠️ RISK MITIGATION**
+
+1. **Backward Compatibility**: Maintain fallback to empty receipt for cases where references cannot be extracted
+2. **Performance Impact**: Optimize reference extraction to minimize processing overhead
+3. **Memory Usage**: Ensure proper cleanup of cloned reference elements
+4. **Error Handling**: Graceful degradation when signature references are malformed
+
+---
+
+### **Post-Day 18 Status Summary**
+
+Upon completion of Day 18 tasks, the Peppol Access Point will generate fully compliant AS4 receipts with proper NonRepudiationInformation elements, ensuring:
+
+- **Full Peppol AS4 Profile v2.0.3 compliance** for receipt generation
+- **Enhanced interoperability** with Phase4 and other AS4 implementations  
+- **Proper non-repudiation support** through signature reference preservation
+- **Maintained backward compatibility** with existing receipt processing
+- **Comprehensive test coverage** for all receipt generation scenarios
+
+This implementation addresses the critical gap in AS4 receipt specification compliance and ensures the Access Point meets all Peppol network requirements for receipt processing.
+
+--- 

@@ -648,11 +648,6 @@ Content-ID: <test-attachment@cid>
             // This test validates that our decryption process can handle
             // the specific encryption format used by Phase4
             
-            // The incoming message from testbed uses:
-            // - RSA-OAEP/SHA-256 for key encryption
-            // - AES-128-GCM for data encryption
-            // - Base64 encoding for binary content
-            
             log.Info("Testing Phase4 encrypted attachment compatibility");
             
             // Validate that our decryption methods support these algorithms
@@ -1368,5 +1363,19 @@ Content-ID: <test-attachment@cid>
                 throw;
             }
         }
+
+        /// <summary>
+        /// Day 18 Test Suite: AS4 Receipt NonRepudiationInformation Implementation
+        /// Tests the proper generation of NonRepudiationInformation elements in AS4 receipts
+        /// as required by Peppol AS4 Profile v2.0.3
+        /// </summary>
+        
+        [Test]
+        public void Test_Day18_Receipt_NonRepudiationInformation_Generation()
+        {
+            // ARRANGE
+            var messageBuilder = new As4MessageBuilder(_mockConfig.Object);
+            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+            var messageId = "receipt-test-" + Guid.NewGuid().ToString();
     }
 }
