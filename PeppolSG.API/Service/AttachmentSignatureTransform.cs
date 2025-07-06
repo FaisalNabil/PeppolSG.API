@@ -8,34 +8,50 @@ using System.Xml;
 
 namespace PeppolSG.API.Service
 {
+    /// <summary>
+    /// Implements the SwA (SOAP with Attachments) Profile transform for signing attachments.
+    /// The digest is calculated on the raw attachment bytes, so this transform just passes data through.
+    /// </summary>
     public class AttachmentSignatureTransform : Transform
     {
         public const string SwAProfileUrl = "http://docs.oasis-open.org/wss/oasis-wss-SwAProfile-1.1#Attachment-Content-Signature-Transform";
-        public string ContentType { get; set; }
         private Stream _inputStream;
 
-        public AttachmentSignatureTransform(string contentType = null)
+        public AttachmentSignatureTransform()
         {
             Algorithm = SwAProfileUrl;
-            ContentType = contentType;
         }
+
+        public AttachmentSignatureTransform(string contentType)
+        {
+            Algorithm = SwAProfileUrl;
+        }
+
+        public override Type[] InputTypes => new[] { typeof(Stream) };
+        public override Type[] OutputTypes => new[] { typeof(Stream) };
 
         public override void LoadInput(object obj)
         {
-            if (obj is Stream s) _inputStream = s;
-            else throw new ArgumentException("Must be Stream");
+            if (obj is Stream stream)
+            {
+                _inputStream = stream;
+            }
+            else
+            {
+                throw new ArgumentException("Input must be a Stream", nameof(obj));
+            }
         }
 
-        public override object GetOutput(Type type)
+        public override object GetOutput()
         {
             return _inputStream;
         }
 
-        public override object GetOutput() => _inputStream;
-
-        public override void LoadInnerXml(XmlNodeList nodeList)
+        public override object GetOutput(Type type)
         {
-            // No-op
+            if (type != typeof(Stream))
+                throw new ArgumentException("Output type must be Stream", nameof(type));
+            return GetOutput();
         }
 
         protected override XmlNodeList GetInnerXml()
@@ -43,7 +59,9 @@ namespace PeppolSG.API.Service
             return null;
         }
 
-        public override Type[] InputTypes => new[] { typeof(Stream) };
-        public override Type[] OutputTypes => new[] { typeof(Stream) };
+        public override void LoadInnerXml(XmlNodeList nodeList)
+        {
+            // No inner XML for this transform
+        }
     }
 }

@@ -12,6 +12,7 @@ using log4net;
 using PeppolSG.API.Models;
 using System.Runtime.Caching;
 using PeppolSG.API.Service.Interfaces;
+using DnsClient;
 
 namespace PeppolSG.API.Service
 {
@@ -67,25 +68,64 @@ namespace PeppolSG.API.Service
             //   https://B-<hash>.<SML_ZONE>/services/<doctype>
             return $"https://{bdns}.{smlZone}/services/{encodedDocType}";
         }
+        /// <summary>
+        /// CORRECTED: Proper SHA-256 hashing for SML BDNS generation
+        /// </summary>
         public static string ToPeppolSmlBdns(string participantScheme, string participantId)
         {
             // 1. Concatenate as per Peppol: e.g. "0088:123456789"
             var fullId = $"{participantScheme}:{participantId}";
             // 2. Remove spaces, lowercase, etc
             fullId = fullId.Replace(" ", "").ToLowerInvariant();
-            // 3. SHA-1 hash
-            using (var sha1 = SHA1.Create())
+            // 3. CORRECTED: SHA-256 hash (was SHA-1)
+            using (var sha256 = SHA256.Create())
             {
                 var bytes = Encoding.UTF8.GetBytes(fullId);
-                var hash = sha1.ComputeHash(bytes);
-                // 4. Convert to hex, uppercase
-                var hashHex = string.Concat(hash.Select(b => b.ToString("X2")));
+                var hash = sha256.ComputeHash(bytes);
+                // 4. Convert to hex, lowercase (Peppol spec requires lowercase)
+                var hashHex = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
                 return $"B-{hashHex}";
             }
         }
         /// <summary>
+        /// NEW: Performs SML DNS lookup to discover the correct SMP hostname
+        /// </summary>
+        private async Task<string> ResolveSmpHostnameViaSmlAsync(string participantId, string participantScheme)
+        {
+            var smlZone = _configService.UsePeppolTestNetwork 
+                ? "acc.edelivery.tech.ec.europa.eu" 
+                : "sml.peppol.eu";
+
+            var bdnsName = ToPeppolSmlBdns(participantScheme, participantId);
+            var smlDomain = $"{bdnsName}.{smlZone}";
+            
+            log.Info($"Querying SML DNS for: {smlDomain}");
+
+            try
+            {
+                var lookup = new LookupClient();
+                var naptrResult = await lookup.QueryAsync(smlDomain, QueryType.NAPTR);
+
+                var naptrRecord = naptrResult.Answers.NaptrRecords().FirstOrDefault();
+                if (naptrRecord == null)
+                {
+                    throw new InvalidOperationException($"SML lookup failed: No NAPTR record found for {smlDomain}. The participant may not be registered.");
+                }
+
+                // The replacement field contains the hostname of the SMP
+                var smpHostname = naptrRecord.Replacement.Value.TrimEnd('.');
+                log.Info($"SML lookup successful. Resolved SMP hostname: {smpHostname}");
+                return smpHostname;
+            }
+            catch (Exception ex)
+            {
+                log.Error($"SML DNS lookup failed for {smlDomain}: {ex.Message}", ex);
+                throw new InvalidOperationException($"SML DNS lookup failed for participant {participantId}: {ex.Message}", ex);
+            }
+        }
+        /// <summary>
         /// Main method to look up endpoint metadata for a Peppol participant.
-        /// Caches results for performance.
+        /// ENHANCED: Now uses proper SML DNS lookup instead of hardcoded SMP URL.
         /// </summary>
         public async Task<SmpEndpoint> LookupEndpointMetadata(string participantId, string participantScheme, string documentTypeId, string processId)
         {
@@ -101,12 +141,17 @@ namespace PeppolSG.API.Service
                 return cachedEndpoint;
             }
 
-            log.Info($"Performing live SMP lookup for {participantId}");
+            log.Info($"Performing live SML/SMP lookup for {participantId}");
 
-            // Perform SMP lookup
-            //IMPORTANT: BuildSmpUrl is not working, later used BuildEdnSmpServiceMetadataUrl. BuildPeppolSmpServiceMetadataUrl should have worked
-            //var smpUrl = BuildSmpUrl(participantScheme, participantId, documentTypeId, processId);
-            var smpUrl = BuildEdnSmpServiceMetadataUrl(participantScheme, participantId, documentTypeId);
+            // ENHANCEMENT: Discover the SMP hostname via SML DNS lookup
+            var smpHostname = await ResolveSmpHostnameViaSmlAsync(participantId, participantScheme);
+
+            // Construct the final ServiceMetadata URL for the discovered SMP
+            var encodedDocType = HttpUtility.UrlEncode(documentTypeId);
+            var encodedParticipant = HttpUtility.UrlEncode($"{participantScheme}::{participantId}");
+            var smpUrl = $"https://{smpHostname}/{encodedParticipant}/services/{encodedDocType}";
+            
+            log.Info($"Querying discovered SMP at URL: {smpUrl}");
 
             var signedServiceMetadata = await GetSignedServiceMetadata(smpUrl);
 

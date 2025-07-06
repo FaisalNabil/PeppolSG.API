@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using PeppolSG.API.Models;
 using PeppolSG.API.Service.Interfaces;
+using MimeKit;
 
 namespace PeppolSG.API.Service
 {
@@ -12,98 +13,92 @@ namespace PeppolSG.API.Service
     {
         public async Task<List<MimePart>> ParseMultipartRequest(Stream stream, string contentType)
         {
-            var boundary = ExtractBoundary(contentType);
-            if (string.IsNullOrEmpty(boundary))
-            {
-                throw new ArgumentException("MIME boundary not found in Content-Type header.");
-            }
-
-            // The stream reader will close the underlying stream, which is what we want.
-            using (var reader = new StreamReader(stream))
-            {
-                var content = await reader.ReadToEndAsync();
-                return ParseMultipartContent(content, boundary);
-            }
-        }
-
-        private List<MimePart> ParseMultipartContent(string content, string boundary)
-        {
             var parts = new List<MimePart>();
-            var partStrings = content.Split(new[] { $"--{boundary}" }, StringSplitOptions.RemoveEmptyEntries);
+            var options = ParserOptions.Default;
 
-            foreach (var partString in partStrings)
+            try
             {
-                if (string.IsNullOrWhiteSpace(partString) || partString.Trim() == "--")
-                    continue;
+                // CRITICAL FIX: Use MimeKit to properly parse MIME without corrupting binary data
+                // This avoids the string conversion that corrupts binary attachments
+                var message = await MimeMessage.LoadAsync(options, stream);
 
-                var part = new MimePart();
-                var headerEndIndex = partString.IndexOf("\r\n\r\n");
-                if (headerEndIndex == -1) continue;
-
-                var headerSection = partString.Substring(0, headerEndIndex);
-                var bodySection = partString.Substring(headerEndIndex + 4);
-
-                var headerLines = headerSection.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var headerLine in headerLines)
+                if (message.Body is Multipart multipart)
                 {
-                    var headerParts = headerLine.Split(new[] { ':' }, 2);
-                    if (headerParts.Length == 2)
+                    foreach (var entity in multipart)
                     {
-                        part.Headers[headerParts[0].Trim()] = headerParts[1].Trim();
+                        if (entity is MimeKit.MimePart mimePart)
+                        {
+                            var appPart = new Models.MimePart
+                            {
+                                ContentId = mimePart.ContentId,
+                                ContentType = mimePart.ContentType.MimeType,
+                                Headers = new Dictionary<string, string>()
+                            };
+
+                            // Copy all headers
+                            foreach (var header in mimePart.Headers)
+                            {
+                                appPart.Headers[header.Id.ToString().ToLowerInvariant()] = header.Value;
+                            }
+
+                            // CRITICAL: Properly decode binary content without string conversion
+                            using (var ms = new MemoryStream())
+                            {
+                                await mimePart.Content.DecodeToAsync(ms);
+                                appPart.ContentBytes = ms.ToArray();
+                            }
+                            
+                            // For text-based parts, also provide text representation
+                            if (mimePart.IsText)
+                            {
+                                appPart.ContentText = mimePart.Text;
+                            }
+                            else
+                            {
+                                appPart.ContentText = null; // No text representation for binary data
+                            }
+
+                            parts.Add(appPart);
+                        }
                     }
                 }
-                
-                // CRITICAL FIX: Handle binary content properly for AS4 attachments
-                var contentType = part.ContentType.ToLowerInvariant();
-                var contentTransferEncoding = part.Headers.TryGetValue("content-transfer-encoding", out var encoding) 
-                    ? encoding.ToLowerInvariant() 
-                    : "binary";
+                else if (message.Body is MimeKit.MimePart singlePart)
+                {
+                    // Handle single part message
+                    var appPart = new Models.MimePart
+                    {
+                        ContentId = singlePart.ContentId,
+                        ContentType = singlePart.ContentType.MimeType,
+                        Headers = new Dictionary<string, string>()
+                    };
 
-                if (contentType.Contains("xml") || contentType.Contains("text") || contentType.Contains("soap"))
-                {
-                    // Text content - treat as string
-                    part.ContentText = bodySection.TrimEnd('\r', '\n');
-                    part.ContentBytes = Encoding.UTF8.GetBytes(part.ContentText);
-                }
-                else
-                {
-                    // Binary content (encrypted attachments, etc.) - treat as raw bytes
-                    // CRITICAL: Don't use UTF-8 encoding for binary data
-                    if (contentTransferEncoding == "base64")
+                    // Copy all headers
+                    foreach (var header in singlePart.Headers)
                     {
-                        // Handle Base64 encoded binary content
-                        var base64Content = bodySection.TrimEnd('\r', '\n');
-                        part.ContentBytes = Convert.FromBase64String(base64Content);
-                        part.ContentText = null; // No text representation for binary
+                        appPart.Headers[header.Id.ToString().ToLowerInvariant()] = header.Value;
                     }
-                    else
+
+                    // Properly decode content
+                    using (var ms = new MemoryStream())
                     {
-                        // Handle raw binary content
-                        part.ContentBytes = Encoding.UTF8.GetBytes(bodySection.TrimEnd('\r', '\n'));
-                        part.ContentText = null; // No text representation for binary
+                        await singlePart.Content.DecodeToAsync(ms);
+                        appPart.ContentBytes = ms.ToArray();
                     }
+                    
+                    if (singlePart.IsText)
+                    {
+                        appPart.ContentText = singlePart.Text;
+                    }
+
+                    parts.Add(appPart);
                 }
-                
-                parts.Add(part);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to parse MIME multipart content: {ex.Message}", ex);
             }
 
             return parts;
-        }
-
-        private string ExtractBoundary(string contentType)
-        {
-            if (string.IsNullOrEmpty(contentType)) return null;
-
-            var parts = contentType.Split(';');
-            foreach (var part in parts)
-            {
-                var trimmedPart = part.Trim();
-                if (trimmedPart.StartsWith("boundary=", StringComparison.OrdinalIgnoreCase))
-                {
-                    return trimmedPart.Substring("boundary=".Length).Trim('"');
-                }
-            }
-            return null;
         }
     }
 } 

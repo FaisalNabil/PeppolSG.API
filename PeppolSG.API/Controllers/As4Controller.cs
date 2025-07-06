@@ -824,64 +824,7 @@ namespace PeppolSG.API.Controllers
         // =====================
         // Helper methods below
         // =====================
-        // =============== Multipart parser(manual) ===============
-        public class MimePartManual
-        {
-            public Dictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
-            public byte[] ContentBytes { get; set; }
-            public string ContentText { get; set; }
-            public string ContentType => Headers.TryGetValue("content-type", out var ct) ? ct : "";
-            public string ContentId => Headers.TryGetValue("content-id", out var cid) ? cid.Trim('<', '>') : "";
-        }
-
-        // Manual boundary parser
-        public static List<MimePartManual> ParseMultipartString(string raw, string boundary)
-        {
-            var parts = new List<MimePartManual>();
-            var boundaryMarker = "--" + boundary.Trim('\"');
-            var blocks = raw.Split(new[] { boundaryMarker }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var block in blocks)
-            {
-                if (block.Trim() == "--") continue; // last boundary
-                // Split headers from content
-                var headerEnd = block.IndexOf("\r\n\r\n");
-                if (headerEnd < 0) headerEnd = block.IndexOf("\n\n");
-                if (headerEnd < 0) continue;
-                var headerText = block.Substring(0, headerEnd);
-                var contentText = block.Substring(headerEnd + (block[headerEnd] == '\r' ? 4 : 2));
-
-                var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var line in headerText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var idx = line.IndexOf(':');
-                    if (idx > 0)
-                    {
-                        var key = line.Substring(0, idx).Trim();
-                        var value = line.Substring(idx + 1).Trim();
-                        headers[key.ToLower()] = value;
-                    }
-                }
-
-                var part = new MimePartManual
-                {
-                    Headers = headers
-                };
-
-                // If XML or text, treat as string; else as bytes
-                if (part.ContentType.Contains("xml") || part.ContentType.Contains("text") || part.ContentType.Contains("soap"))
-                {
-                    part.ContentText = contentText.Trim();
-                    part.ContentBytes = Encoding.UTF8.GetBytes(part.ContentText);
-                }
-                else
-                {
-                    // If not XML, treat as raw bytes (if actually binary, you'll need to use a stream in prod)
-                    part.ContentBytes = Encoding.UTF8.GetBytes(contentText.Trim('\r', '\n'));
-                }
-                parts.Add(part);
-            }
-            return parts;
-        }
+        // =============== Helper methods ===============
         private void ValidateMessageId(string messageId)
         {
             // Implement protocol syntax validation here!
@@ -1045,15 +988,15 @@ namespace PeppolSG.API.Controllers
                 log.Debug($"Key encryption algorithm: {keyEncAlg}");
 
                 byte[] aesKey;
-                var rsa = myCert.GetRSAPrivateKeySafe(); // Use safe wrapper
-                if (keyEncAlg == "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p" // OAEP w/ SHA-1
-                    || string.IsNullOrEmpty(keyEncAlg)) // default fallback
+                // CRITICAL FIX: Use consistent BouncyCastle helper for both SHA1 and SHA256 OAEP variants
+                // This avoids the mismatch between BouncyCastle encryption and .NET decryption
+                if (keyEncAlg == "http://www.w3.org/2009/xmlenc11#rsa-oaep" || 
+                    keyEncAlg == "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p" ||
+                    string.IsNullOrEmpty(keyEncAlg)) // default fallback
                 {
-                    aesKey = rsa.Decrypt(encryptedKey, RSAEncryptionPadding.OaepSHA1);
-                }
-                else if (keyEncAlg == "http://www.w3.org/2009/xmlenc11#rsa-oaep") // OAEP w/ SHA-256
-                {
-                    aesKey = rsa.Decrypt(encryptedKey, RSAEncryptionPadding.OaepSHA256);
+                    // Use the consistent BouncyCastle helper for both SHA1 and SHA256 OAEP variants.
+                    // The helper is already configured for SHA256 which is the Peppol standard.
+                    aesKey = RsaOaepDecrypt_MGF1_SHA256(encryptedKey, myCert);
                 }
                 else
                 {
@@ -1327,14 +1270,7 @@ namespace PeppolSG.API.Controllers
     #region POCOs
 
     // =============== Multipart parser(manual) ===============
-    public class MimePartManual
-    {
-        public Dictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
-        public byte[] ContentBytes { get; set; }
-        public string ContentText { get; set; }
-        public string ContentType => Headers.TryGetValue("content-type", out var ct) ? ct : "";
-        public string ContentId => Headers.TryGetValue("content-id", out var cid) ? cid.Trim('<', '>') : "";
-    }
+
     public class PayloadInfo
     {
         public string ContentId { get; set; }
