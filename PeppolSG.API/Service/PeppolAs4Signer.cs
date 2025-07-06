@@ -249,14 +249,15 @@ namespace PeppolSG.API.Service
                 DigestMethod = SignedXml.XmlDsigSHA256Url
             };
 
-            // Add the SwA transform for Peppol AS4 compliance
-            attachRef.AddTransform(new AttachmentSignatureTransform("application/gzip"));
-
-            // Calculate digest directly without reflection - this avoids URI resolution issues
+            // Calculate digest directly for the attachment content
             var digest = ComputeSha256Digest(encryptedAttachment);
 
-            // Set the digest value directly using the public API
+            // Set the digest value directly
             attachRef.DigestValue = digest;
+
+            // Add the SwA transform for Peppol AS4 compliance
+            // This transform does not alter the content for digest calculation
+            attachRef.AddTransform(new AttachmentSignatureTransform());
 
             log.Debug($"Created attachment reference for CID: {cidUri}, Digest: {Convert.ToBase64String(digest)}");
             return attachRef;

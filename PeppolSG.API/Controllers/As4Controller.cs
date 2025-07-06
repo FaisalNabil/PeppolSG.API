@@ -273,7 +273,7 @@ namespace PeppolSG.API.Controllers
                 ValidateReceiptElementIds(wsSecurityHeader, messaging, bodyId, messagingId);
 
                 // Step 3: Build SOAP envelope with validated elements
-                var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader);
+                var soapEnvelope = _messageBuilder.BuildSoapEnvelope(messaging, wsSecurityHeader, bodyId);
 
                 // Step 4: Enhanced signing using centralized PeppolAs4Signer service
                 try

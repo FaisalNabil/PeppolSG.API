@@ -275,7 +275,7 @@ namespace PeppolSG.API.Service
         /// Builds complete SOAP envelope with WS-Security header
         /// Implementation for eDelivery AS4 Profile v1.1.0
         /// </summary>
-        public XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader)
+        public XDocument BuildSoapEnvelope(XElement messaging, XElement wsSecurityHeader, string bodyId)
         {
             if (messaging == null) throw new ArgumentNullException(nameof(messaging));
 
@@ -285,12 +285,21 @@ namespace PeppolSG.API.Service
                 headerElements.Insert(0, wsSecurityHeader); // WS-Security should come first
             }
 
+            var body = new XElement(S12 + "Body");
+            if (!string.IsNullOrWhiteSpace(bodyId))
+            {
+                body.Add(
+                    new XAttribute(XNamespace.Xmlns + "wsu", WSU),
+                    new XAttribute(WSU + "Id", bodyId)
+                );
+            }
+
             var envelope = new XDocument(
                 new XDeclaration("1.0", "UTF-8", null),
                 new XElement(S12 + "Envelope",
                     new XAttribute(XNamespace.Xmlns + "S12", S12.NamespaceName),
                     new XElement(S12 + "Header", headerElements),
-                    new XElement(S12 + "Body") // Empty body for AS4 profile
+                    body
                 )
             );
 
