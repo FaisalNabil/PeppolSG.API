@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">
+    <ID>12345</ID>
+    <IssueDate>2025-07-06</IssueDate>
+    <cbc:EndpointID xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" schemeID="0088">123456789</cbc:EndpointID>
+</Invoice>
